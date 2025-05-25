@@ -31,3 +31,5 @@ Please provide the output of running the script with `--debug` flag:
 
 ```bash
 ./debian_upgrade.sh --debug
+<details>
+<summary>Debug Output (click to expand)</summary>
