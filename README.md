@@ -41,12 +41,6 @@ A powerful automated upgrade script designed specifically for Debian systems, ca
 
 ## 🚀 Quick Start
 
-### One-line Installation
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/everett7623/debian-auto-upgrade/main/install.sh | bash
-```
-
 ### Manual Installation
 
 ```bash
