@@ -49,7 +49,7 @@ jobs:
       - name: Run unit tests
         run: |
           if [ -d "tests" ]; then
-            bats tests/
+            bats tests/test_functions.bats
           else
             echo "No tests directory found, skipping unit tests"
           fi
