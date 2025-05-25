@@ -77,4 +77,3 @@ After installation, verify with:
 debian_upgrade.sh --version
 debian_upgrade.sh --check
 ```
-```
