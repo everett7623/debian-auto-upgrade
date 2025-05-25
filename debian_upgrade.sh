@@ -7,7 +7,7 @@
 set -e  # 遇到错误立即退出
 
 # 脚本版本
-SCRIPT_VERSION="2.0"
+SCRIPT_VERSION="2.1"
 
 # 颜色定义
 RED='\033[0;31m'
@@ -75,11 +75,13 @@ check_system() {
 check_root() {
     if [[ $EUID -eq 0 ]]; then
         log_warning "检测到以root用户运行，这不是推荐做法"
-        read -p "是否继续？[y/N]: " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            log_info "建议使用普通用户配合sudo运行此脚本"
-            exit 1
+        if [[ "${FORCE:-}" != "1" ]]; then
+            read -p "是否继续？[y/N]: " -n 1 -r
+            echo
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                log_info "建议使用普通用户配合sudo运行此脚本"
+                exit 1
+            fi
         fi
         USE_SUDO=""
     else
@@ -143,7 +145,13 @@ get_next_version() {
         "9") echo "10" ;;
         "10") echo "11" ;;
         "11") echo "12" ;;
-        "12") echo "13" ;;
+        "12") 
+            if [[ "${STABLE_ONLY:-}" == "1" ]]; then
+                echo ""  # 如果设置了只升级稳定版，不升级到13
+            else
+                echo "13"
+            fi
+            ;;
         "13") echo "14" ;;
         *) echo "" ;;
     esac
@@ -533,9 +541,18 @@ main_upgrade() {
     if [[ -z "$next_version" ]]; then
         if [[ "$current_status" == "stable" ]]; then
             log_success "恭喜！您已经在使用最新稳定版本的Debian $current_version"
+            if [[ "${STABLE_ONLY:-}" != "1" ]]; then
+                echo
+                log_info "💡 提示："
+                log_info "- 当前版本是最新的稳定版本，建议保持使用"
+                log_info "- 如需体验新功能，可使用 --allow-testing 选项升级到测试版本"
+                log_info "- 测试版本可能不稳定，不建议在生产环境使用"
+            fi
         else
             log_info "您正在使用 Debian $current_version ($current_status)"
-            log_info "如需升级到稳定版本，请手动操作"
+            if [[ "$current_status" == "testing" || "$current_status" == "unstable" ]]; then
+                log_info "当前版本为非稳定版本，如需回到稳定版本请手动操作"
+            fi
         fi
         exit 0
     fi
@@ -552,18 +569,78 @@ main_upgrade() {
     
     log_info "准备升级到: Debian $next_version ($next_codename) [$next_status]"
     
-    # 风险提示
+    # 改进的风险提示和用户确认
     if [[ "$next_status" == "testing" || "$next_status" == "unstable" ]]; then
-        log_warning "注意：您即将升级到非稳定版本，可能存在风险！"
-    fi
-    
-    # 询问用户确认
-    echo
-    read -p "是否继续升级到 Debian $next_version ($next_codename)? [y/N]: " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        log_info "用户取消升级"
-        exit 0
+        echo
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        log_warning "⚠️  重要警告：即将升级到非稳定版本！"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo
+        echo "📋 版本信息："
+        echo "   • 目标版本: Debian $next_version ($next_codename)"
+        echo "   • 版本状态: $next_status"
+        echo "   • 稳定性: 非稳定版本"
+        echo
+        echo "⚠️  风险说明："
+        echo "   • 可能包含未修复的bug和不稳定的功能"
+        echo "   • 软件包可能不完整或存在兼容性问题"
+        echo "   • 不建议在生产环境中使用"
+        echo "   • 升级过程可能失败或导致系统不稳定"
+        echo
+        echo "💡 建议："
+        echo "   • 生产服务器: 保持当前稳定版本"
+        echo "   • 测试环境: 可以谨慎尝试"
+        echo "   • 确保有完整的备份和恢复方案"
+        echo "   • 确保有VPS控制台访问权限"
+        echo
+        
+        if [[ "${FORCE:-}" == "1" ]]; then
+            log_warning "强制模式已启用，跳过确认直接升级"
+        else
+            # 需要明确确认
+            while true; do
+                echo -n "您确定要升级到测试版本吗？请输入 'YES' 确认，或 'no' 取消: "
+                read -r confirm
+                case $confirm in
+                    "YES")
+                        log_info "用户确认升级到测试版本"
+                        break
+                        ;;
+                    [Nn][Oo]|"")
+                        log_info "用户取消升级"
+                        log_success "保持当前稳定版本 Debian $current_version - 明智的选择！"
+                        exit 0
+                        ;;
+                    *)
+                        echo "❌ 请输入 'YES' (大写) 确认升级到测试版本，或 'no' 取消"
+                        ;;
+                esac
+            done
+        fi
+        
+        echo
+        log_warning "最后确认：即将开始升级到测试版本..."
+        if [[ "${FORCE:-}" != "1" ]]; then
+            sleep 3
+        fi
+    else
+        # 稳定版本的常规确认
+        echo
+        log_info "🎯 升级到稳定版本："
+        log_info "   从: Debian $current_version ($current_codename) [$current_status]"
+        log_info "   到: Debian $next_version ($next_codename) [$next_status]"
+        echo
+        
+        if [[ "${FORCE:-}" == "1" ]]; then
+            log_info "强制模式已启用，自动确认升级"
+        else
+            read -p "是否继续升级到 Debian $next_version ($next_codename)? [y/N]: " -n 1 -r
+            echo
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                log_info "用户取消升级"
+                exit 0
+            fi
+        fi
     fi
     
     # 执行升级步骤
@@ -602,13 +679,17 @@ main_upgrade() {
         log_info "3. 如遇问题，可使用备份配置进行恢复"
         
         echo
-        read -p "是否现在重启系统? [y/N]: " -n 1 -r
-        echo
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            log_info "正在重启系统..."
-            $USE_SUDO reboot
+        if [[ "${FORCE:-}" == "1" ]]; then
+            log_info "强制模式已启用，建议手动重启系统"
         else
-            log_info "请稍后手动重启系统"
+            read -p "是否现在重启系统? [y/N]: " -n 1 -r
+            echo
+            if [[ $REPLY =~ ^[Yy]$ ]]; then
+                log_info "正在重启系统..."
+                $USE_SUDO reboot
+            else
+                log_info "请稍后手动重启系统"
+            fi
         fi
     else
         log_error "升级验证失败，请检查系统状态"
@@ -627,12 +708,14 @@ Debian自动逐级升级脚本 v$SCRIPT_VERSION
 用法: $0 [选项]
 
 选项:
-  -h, --help      显示此帮助信息
-  -v, --version   显示当前Debian版本信息
-  -c, --check     检查是否有可用升级
-  -d, --debug     启用调试模式
-  --fix-only      仅执行系统修复，不进行升级
-  --force         强制执行升级（跳过确认）
+  -h, --help          显示此帮助信息
+  -v, --version       显示当前Debian版本信息
+  -c, --check         检查是否有可用升级
+  -d, --debug         启用调试模式
+  --fix-only          仅执行系统修复，不进行升级
+  --force             强制执行升级（跳过确认）
+  --stable-only       仅升级到稳定版本，跳过测试版本
+  --allow-testing     允许升级到测试版本（默认行为）
 
 功能特性:
   ✓ 自动检测当前Debian版本和目标版本
@@ -643,26 +726,35 @@ Debian自动逐级升级脚本 v$SCRIPT_VERSION
   ✓ 完整的配置备份和恢复
   ✓ 网络和系统环境检查
   ✓ 详细的日志和错误处理
+  ✓ 智能版本控制和风险提示
 
 支持的Debian版本:
   - Debian 8 (Jessie) → 9 (Stretch)
   - Debian 9 (Stretch) → 10 (Buster)  
   - Debian 10 (Buster) → 11 (Bullseye)
   - Debian 11 (Bullseye) → 12 (Bookworm)
-  - Debian 12 (Bookworm) → 13 (Trixie)
+  - Debian 12 (Bookworm) → 13 (Trixie) [测试版本]
 
 示例:
-  $0                # 执行自动升级
-  $0 --check        # 检查可用升级
-  $0 --version      # 显示版本信息
-  $0 --fix-only     # 仅修复系统问题
-  $0 --debug        # 启用调试模式
+  $0                    # 执行自动升级
+  $0 --check            # 检查可用升级
+  $0 --version          # 显示版本信息
+  $0 --fix-only         # 仅修复系统问题
+  $0 --debug            # 启用调试模式
+  $0 --stable-only      # 仅升级到稳定版本
+  $0 --force            # 强制升级（跳过确认）
   
 注意事项:
   - 升级前会自动备份重要配置
   - 建议在升级前创建系统快照
   - VPS用户请确保有控制台访问权限
+  - 测试版本升级需要明确确认
   - 升级过程可能需要较长时间
+
+安全提示:
+  - Debian 12 是当前稳定版本，建议保持使用
+  - Debian 13 为测试版本，不建议生产环境使用
+  - 使用 --stable-only 可避免意外升级到测试版本
 EOF
 }
 
@@ -680,7 +772,18 @@ check_upgrade() {
     echo "当前版本: Debian $current_version ($current_codename) [$current_status]"
     
     if [[ -z "$next_version" ]]; then
-        echo "状态: ✓ 已是最新版本"
+        if [[ "$current_status" == "stable" ]]; then
+            echo "状态: ✓ 已是最新稳定版本"
+            if [[ "${STABLE_ONLY:-}" != "1" ]]; then
+                echo
+                echo "💡 说明："
+                echo "- 当前使用最新稳定版本，建议保持"
+                echo "- 如需体验新功能，可添加 --allow-testing 选项"
+                echo "- 测试版本风险较高，仅建议测试环境使用"
+            fi
+        else
+            echo "状态: ✓ 已是最新版本 ($current_status)"
+        fi
     else
         local next_version_info=$(get_version_info "$next_version")
         local next_codename=$(echo "$next_version_info" | cut -d'|' -f1)
@@ -693,6 +796,10 @@ check_upgrade() {
             
             if [[ "$next_status" == "testing" || "$next_status" == "unstable" ]]; then
                 echo "警告: ⚠️  目标版本为非稳定版本"
+                echo "建议: 💡 生产环境请保持当前稳定版本"
+                echo "选项: 🛡️  使用 --stable-only 可避免升级到测试版本"
+            else
+                echo "推荐: ✅ 可安全升级到稳定版本"
             fi
         fi
     fi
@@ -729,6 +836,8 @@ check_upgrade() {
     else
         echo "- 环境类型: 物理机或未知"
     fi
+    
+    echo "========================================="
 }
 
 # 系统修复模式
@@ -782,6 +891,16 @@ main() {
             --force)
                 export FORCE=1
                 log_warning "强制模式已启用，将跳过确认提示"
+                shift
+                ;;
+            --stable-only)
+                export STABLE_ONLY=1
+                log_info "仅升级稳定版本模式已启用"
+                shift
+                ;;
+            --allow-testing)
+                export STABLE_ONLY=0
+                log_info "允许升级测试版本模式已启用"
                 shift
                 ;;
             *)
