@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Debian自动逐级升级脚本
+# Debian自动逐级升级脚本 - 修复版
 # 功能：自动检测当前版本并升级到下一个版本，直到最新版本
 # 适用于大部分Debian系统，包括VPS环境
 
@@ -41,6 +41,34 @@ log_debug() {
     fi
 }
 
+# 用户输入确认函数
+get_user_confirmation() {
+    local prompt="$1"
+    local response=""
+    
+    # 确保从终端读取输入
+    if [[ ! -t 0 ]]; then
+        exec 0</dev/tty
+    fi
+    
+    while true; do
+        echo -n "$prompt"
+        read -r response </dev/tty
+        
+        case "$response" in
+            [Yy][Ee][Ss])
+                return 0  # 确认升级
+                ;;
+            [Nn][Oo]|"")
+                return 1  # 取消升级
+                ;;
+            *)
+                echo "❌ 请输入 'YES' (大写) 确认升级到测试版本，或 'no' 取消"
+                ;;
+        esac
+    done
+}
+
 # 检查系统环境
 check_system() {
     log_info "检查系统环境..."
@@ -76,7 +104,7 @@ check_root() {
     if [[ $EUID -eq 0 ]]; then
         log_warning "检测到以root用户运行，这不是推荐做法"
         if [[ "${FORCE:-}" != "1" ]]; then
-            read -p "是否继续？[y/N]: " -n 1 -r
+            read -p "是否继续？[y/N]: " -n 1 -r </dev/tty
             echo
             if [[ ! $REPLY =~ ^[Yy]$ ]]; then
                 log_info "建议使用普通用户配合sudo运行此脚本"
@@ -594,61 +622,18 @@ main_upgrade() {
         echo "   • 确保有VPS控制台访问权限"
         echo
         
-# 用户输入函数
-get_user_confirmation() {
-    local prompt="$1"
-    local default_response="$2"
-    local response=""
-    
-    # 确保从终端读取输入
-    exec < /dev/tty
-    
-    while true; do
-        echo -n "$prompt"
-        read -r response
-        
-        # 如果输入为空且有默认值
-        if [[ -z "$response" && -n "$default_response" ]]; then
-            response="$default_response"
+        if [[ "${FORCE:-}" == "1" ]]; then
+            log_warning "强制模式已启用，跳过确认直接升级"
+        else
+            # 需要明确确认
+            if get_user_confirmation "您确定要升级到测试版本吗？请输入 'YES' 确认，或 'no' 取消: "; then
+                log_info "用户确认升级到测试版本"
+            else
+                log_info "用户取消升级"
+                log_success "保持当前稳定版本 Debian $current_version - 明智的选择！"
+                exit 0
+            fi
         fi
-        
-        case "$response" in
-            [Yy][Ee][Ss])
-                echo "YES"
-                return 0
-                ;;
-            [Nn][Oo])
-                echo "NO"
-                return 1
-                ;;
-            "")
-                if [[ -n "$default_response" ]]; then
-                    echo "$default_response"
-                    return 1  # 默认为取消
-                else
-                    echo "请输入 'YES' 或 'no'"
-                fi
-                ;;
-            *)
-                echo "❌ 请输入 'YES' (大写) 确认升级到测试版本，或 'no' 取消"
-                ;;
-        esac
-    done
-}
-
-# 在测试版本确认部分使用：
-if [[ "${FORCE:-}" == "1" ]]; then
-    log_warning "强制模式已启用，跳过确认直接升级"
-else
-    # 需要明确确认
-    if get_user_confirmation "您确定要升级到测试版本吗？请输入 'YES' 确认，或 'no' 取消: " "no"; then
-        log_info "用户确认升级到测试版本"
-    else
-        log_info "用户取消升级"
-        log_success "保持当前稳定版本 Debian $current_version - 明智的选择！"
-        exit 0
-    fi
-fi
         
         echo
         log_warning "最后确认：即将开始升级到测试版本..."
@@ -666,7 +651,7 @@ fi
         if [[ "${FORCE:-}" == "1" ]]; then
             log_info "强制模式已启用，自动确认升级"
         else
-            read -p "是否继续升级到 Debian $next_version ($next_codename)? [y/N]: " -n 1 -r
+            read -p "是否继续升级到 Debian $next_version ($next_codename)? [y/N]: " -n 1 -r </dev/tty
             echo
             if [[ ! $REPLY =~ ^[Yy]$ ]]; then
                 log_info "用户取消升级"
@@ -714,7 +699,7 @@ fi
         if [[ "${FORCE:-}" == "1" ]]; then
             log_info "强制模式已启用，建议手动重启系统"
         else
-            read -p "是否现在重启系统? [y/N]: " -n 1 -r
+            read -p "是否现在重启系统? [y/N]: " -n 1 -r </dev/tty
             echo
             if [[ $REPLY =~ ^[Yy]$ ]]; then
                 log_info "正在重启系统..."
