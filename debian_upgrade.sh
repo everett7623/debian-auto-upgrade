@@ -594,29 +594,61 @@ main_upgrade() {
         echo "   • 确保有VPS控制台访问权限"
         echo
         
-        if [[ "${FORCE:-}" == "1" ]]; then
-            log_warning "强制模式已启用，跳过确认直接升级"
-        else
-            # 需要明确确认
-            while true; do
-                echo -n "您确定要升级到测试版本吗？请输入 'YES' 确认，或 'no' 取消: "
-                read -r confirm
-                case $confirm in
-                    "YES")
-                        log_info "用户确认升级到测试版本"
-                        break
-                        ;;
-                    [Nn][Oo]|"")
-                        log_info "用户取消升级"
-                        log_success "保持当前稳定版本 Debian $current_version - 明智的选择！"
-                        exit 0
-                        ;;
-                    *)
-                        echo "❌ 请输入 'YES' (大写) 确认升级到测试版本，或 'no' 取消"
-                        ;;
-                esac
-            done
+# 用户输入函数
+get_user_confirmation() {
+    local prompt="$1"
+    local default_response="$2"
+    local response=""
+    
+    # 确保从终端读取输入
+    exec < /dev/tty
+    
+    while true; do
+        echo -n "$prompt"
+        read -r response
+        
+        # 如果输入为空且有默认值
+        if [[ -z "$response" && -n "$default_response" ]]; then
+            response="$default_response"
         fi
+        
+        case "$response" in
+            [Yy][Ee][Ss])
+                echo "YES"
+                return 0
+                ;;
+            [Nn][Oo])
+                echo "NO"
+                return 1
+                ;;
+            "")
+                if [[ -n "$default_response" ]]; then
+                    echo "$default_response"
+                    return 1  # 默认为取消
+                else
+                    echo "请输入 'YES' 或 'no'"
+                fi
+                ;;
+            *)
+                echo "❌ 请输入 'YES' (大写) 确认升级到测试版本，或 'no' 取消"
+                ;;
+        esac
+    done
+}
+
+# 在测试版本确认部分使用：
+if [[ "${FORCE:-}" == "1" ]]; then
+    log_warning "强制模式已启用，跳过确认直接升级"
+else
+    # 需要明确确认
+    if get_user_confirmation "您确定要升级到测试版本吗？请输入 'YES' 确认，或 'no' 取消: " "no"; then
+        log_info "用户确认升级到测试版本"
+    else
+        log_info "用户取消升级"
+        log_success "保持当前稳定版本 Debian $current_version - 明智的选择！"
+        exit 0
+    fi
+fi
         
         echo
         log_warning "最后确认：即将开始升级到测试版本..."
