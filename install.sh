@@ -17,7 +17,7 @@ NC='\033[0m'
 REPO_URL="https://github.com/everett7623/debian-auto-upgrade"
 RAW_URL="https://raw.githubusercontent.com/everett7623/debian-auto-upgrade/main"
 SCRIPT_NAME="debian_upgrade.sh"
-INSTALL_DIR="/usr/local/bin"
+INSTALL_DIR="/"
 SYMLINK_NAME="debian-upgrade"
 
 # Log functions
