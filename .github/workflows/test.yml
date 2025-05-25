@@ -1,0 +1,55 @@
+name: Test Debian Auto Upgrade
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  shellcheck:
+    runs-on: ubuntu-latest
+    name: ShellCheck Analysis
+    steps:
+      - uses: actions/checkout@v3
+      - name: Run ShellCheck
+        uses: ludeeus/action-shellcheck@master
+        with:
+          scandir: '.'
+          format: gcc
+          severity: warning
+
+  test-basic:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        debian-version: ['10', '11', '12']
+    name: Test on Debian ${{ matrix.debian-version }}
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Docker
+        uses: docker/setup-buildx-action@v2
+      - name: Test script syntax
+        run: |
+          bash -n debian_upgrade.sh
+      - name: Test in Debian container
+        run: |
+          docker run --rm -v $PWD:/workspace debian:${{ matrix.debian-version }} \
+            bash -c "cd /workspace && bash -n debian_upgrade.sh && echo 'Syntax check passed'"
+
+  test-functions:
+    runs-on: ubuntu-latest
+    name: Unit Tests
+    steps:
+      - uses: actions/checkout@v3
+      - name: Install BATS
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bats
+      - name: Run unit tests
+        run: |
+          if [ -d "tests" ]; then
+            bats tests/
+          else
+            echo "No tests directory found, skipping unit tests"
+          fi
