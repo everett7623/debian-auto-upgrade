@@ -73,17 +73,21 @@ check_system() {
 # Download the main script
 download_script() {
     local temp_file="/tmp/${SCRIPT_NAME}"
+    local download_url="${RAW_URL}/${SCRIPT_NAME}"
     
     log_info "Downloading Debian Auto Upgrade script..."
+    log_info "Download URL: $download_url"
     
     if command -v curl >/dev/null 2>&1; then
-        if ! curl -fsSL "${RAW_URL}/${SCRIPT_NAME}" -o "$temp_file"; then
+        if ! curl -fsSL "$download_url" -o "$temp_file"; then
             log_error "Failed to download script using curl."
+            log_error "URL: $download_url"
             return 1
         fi
     elif command -v wget >/dev/null 2>&1; then
-        if ! wget -q "${RAW_URL}/${SCRIPT_NAME}" -O "$temp_file"; then
+        if ! wget -q "$download_url" -O "$temp_file"; then
             log_error "Failed to download script using wget."
+            log_error "URL: $download_url"
             return 1
         fi
     fi
@@ -97,6 +101,7 @@ download_script() {
     # Check if it's a valid bash script
     if ! head -n 1 "$temp_file" | grep -q "^#!/bin/bash"; then
         log_error "Downloaded file is not a valid bash script."
+        log_error "First line: $(head -n 1 "$temp_file")"
         return 1
     fi
     
@@ -155,6 +160,15 @@ verify_installation() {
     else
         log_warning "Installation directory is not in PATH."
         log_info "You may need to add ${INSTALL_DIR} to your PATH or use full path."
+    fi
+    
+    # Test script execution
+    log_info "Testing script execution..."
+    if timeout 10 "${INSTALL_DIR}/${SCRIPT_NAME}" --version >/dev/null 2>&1; then
+        log_success "Script execution test passed."
+    else
+        log_warning "Script execution test failed or timed out."
+        log_info "This may be normal if the script requires interactive input."
     fi
 }
 
@@ -226,6 +240,13 @@ main() {
         log_info "You can now run '${SCRIPT_NAME}' or '${SYMLINK_NAME}' to start upgrading your Debian system."
     else
         log_error "Installation failed during download process."
+        log_info "Please check your internet connection and try again."
+        log_info "If the problem persists, you can manually download and install:"
+        echo
+        echo "  wget ${RAW_URL}/${SCRIPT_NAME}"
+        echo "  chmod +x ${SCRIPT_NAME}"
+        echo "  sudo mv ${SCRIPT_NAME} ${INSTALL_DIR}/"
+        echo
         exit 1
     fi
 }
