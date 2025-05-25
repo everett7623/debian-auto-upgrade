@@ -112,4 +112,3 @@ Backups are stored in `/var/backups/debian-upgrade-TIMESTAMP/`
 3. Update custom configurations
 4. Monitor system stability
 5. Plan next upgrade cycle
-```
