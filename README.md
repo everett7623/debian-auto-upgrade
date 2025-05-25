@@ -5,15 +5,19 @@
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Debian](https://img.shields.io/badge/debian-8%2B-red.svg)](https://www.debian.org/)
 [![Bash](https://img.shields.io/badge/bash-4.0%2B-green.svg)](https://www.gnu.org/software/bash/)
+[![Version](https://img.shields.io/badge/version-2.1-brightgreen.svg)](CHANGELOG.md)
 [![GitHub stars](https://img.shields.io/github/stars/everett7623/debian-auto-upgrade.svg?style=social)](https://github.com/everett7623/debian-auto-upgrade/stargazers)
 
 ## 📖 Overview
 
 A powerful automated upgrade script designed specifically for Debian systems, capable of safely upgrading systems from older versions to the latest release step by step. Specially optimized for VPS environments with robust error recovery and fault tolerance capabilities.
 
+⚠️ **Important**: Debian 12 (Bookworm) is the current stable version. The script will warn users before upgrading to testing versions and requires explicit confirmation.
+
 ### ✨ Key Features
 
 - 🔄 **Progressive Upgrades** - Safely upgrade from Debian 8 to the latest version step by step
+- 🛡️ **Smart Version Control** - Prevents accidental upgrades to unstable versions
 - 🛠️ **VPS Environment Optimization** - Automatic detection and fixing of VPS-specific issues
 - 🌍 **Smart Mirror Selection** - Automatically choose optimal software sources based on geographic location
 - 🔧 **Automatic System Repair** - Fix APT issues, dependency conflicts, and broken packages
@@ -21,16 +25,19 @@ A powerful automated upgrade script designed specifically for Debian systems, ca
 - 💾 **Complete Backup** - Automatic backup of critical configuration files before upgrade
 - 📊 **Detailed Logging** - Colorized output with timestamps and debug mode
 - 🔍 **System Verification** - Comprehensive system status validation before and after upgrade
+- ⚠️ **Risk Assessment** - Clear warnings and confirmations for testing/unstable versions
 
 ## 🎯 Supported System Versions
 
-| Source Version | Target Version | Status | Notes |
-|----------------|----------------|--------|-------|
-| Debian 8 (Jessie) | Debian 9 (Stretch) | ✅ Supported | Legacy upgrade |
-| Debian 9 (Stretch) | Debian 10 (Buster) | ✅ Supported | Legacy upgrade |
-| Debian 10 (Buster) | Debian 11 (Bullseye) | ✅ Supported | Stable upgrade |
-| Debian 11 (Bullseye) | Debian 12 (Bookworm) | ✅ Supported | Current stable |
-| Debian 12 (Bookworm) | Debian 13 (Trixie) | ⚠️ Testing | Upgrade to testing |
+| Source Version | Target Version | Status | Upgrade Safety | Notes |
+|----------------|----------------|--------|----------------|-------|
+| Debian 8 (Jessie) | Debian 9 (Stretch) | ✅ Supported | 🔒 Safe | Legacy upgrade |
+| Debian 9 (Stretch) | Debian 10 (Buster) | ✅ Supported | 🔒 Safe | Legacy upgrade |
+| Debian 10 (Buster) | Debian 11 (Bullseye) | ✅ Supported | 🔒 Safe | Stable upgrade |
+| Debian 11 (Bullseye) | Debian 12 (Bookworm) | ✅ Supported | 🔒 Safe | Current stable |
+| Debian 12 (Bookworm) | Debian 13 (Trixie) | ⚠️ Available | ⚠️ Risky | Testing version - requires explicit confirmation |
+
+> **Recommendation**: For production systems, stay on Debian 12 (Bookworm) as it's the current stable release.
 
 ## 🚀 Quick Start
 
@@ -58,13 +65,13 @@ chmod +x debian_upgrade.sh
 ### Basic Commands
 
 ```bash
-# Automatic system upgrade
-./debian_upgrade.sh
-
-# Check available upgrades
+# Check current system and available upgrades
 ./debian_upgrade.sh --check
 
-# Show current version
+# Automatic system upgrade (stable versions only - recommended)
+./debian_upgrade.sh --stable-only
+
+# Show current version information
 ./debian_upgrade.sh --version
 
 # Display help information
@@ -74,13 +81,39 @@ chmod +x debian_upgrade.sh
 ### Advanced Options
 
 ```bash
-# Enable debug mode
+# Enable debug mode for troubleshooting
 ./debian_upgrade.sh --debug
 
 # Fix system issues only (no upgrade)
 ./debian_upgrade.sh --fix-only
 
 # Force upgrade (skip confirmation prompts)
+./debian_upgrade.sh --force
+
+# Allow upgrades to testing versions (not recommended for production)
+./debian_upgrade.sh --allow-testing
+
+# Combine options
+./debian_upgrade.sh --stable-only --debug
+```
+
+### 🛡️ Safe Usage Patterns
+
+**For Production Servers (Recommended):**
+```bash
+# Check what's available without upgrading
+./debian_upgrade.sh --stable-only --check
+
+# Upgrade only to stable versions
+./debian_upgrade.sh --stable-only
+```
+
+**For Development/Testing:**
+```bash
+# Allow testing versions (requires explicit confirmation)
+./debian_upgrade.sh --allow-testing
+
+# Force upgrade for automation (be careful!)
 ./debian_upgrade.sh --force
 ```
 
@@ -137,17 +170,35 @@ Automatic backup before upgrade:
 
 > **Critical Reminder**: System upgrade is a critical operation. Please prepare the following before upgrading:
 
+### 🚨 Version-Specific Warnings
+
+**For Debian 12 Users:**
+- ✅ You're on the **current stable version** - recommended to stay
+- ⚠️ Upgrading to Debian 13 means moving to **testing branch** (unstable)
+- 🛡️ Use `--stable-only` flag to avoid accidental testing upgrades
+- 💡 The script will warn and require explicit 'YES' confirmation for testing upgrades
+
+**For All Users:**
+
 ### Pre-upgrade Preparation
 1. 📸 **Create system snapshot** (if on VPS)
 2. 💾 **Backup important data**
 3. 📝 **Record current system configuration**
 4. 🔑 **Ensure console access is available**
+5. 🧪 **Test the upgrade process in a development environment first**
 
 ### Special Notes for VPS Users
 - Ensure your VPS provider supports console access
 - SSH connection may be temporarily interrupted during upgrade
 - Recommend performing upgrades during maintenance windows
 - Prepare VPS restart and recovery plans
+- Have emergency contact information for your VPS provider ready
+
+### Version Upgrade Behavior
+- **Stable → Stable**: Simple confirmation required
+- **Stable → Testing**: Explicit 'YES' confirmation required with detailed warnings
+- **`--stable-only` mode**: Will not offer testing version upgrades
+- **`--force` mode**: Skips all confirmations (use with extreme caution)
 
 ## 🐛 Troubleshooting
 
@@ -256,8 +307,18 @@ This project is licensed under the [MIT License](LICENSE).
 
 <div align="center">
 
-**If this project helps you, please give it a ⭐ Star!**
+**⭐ If this project helps you, please give it a star! ⭐**
+
+**🛡️ Remember: Debian 12 (Bookworm) is stable - consider staying on it for production systems**
 
 [⬆️ Back to Top](#debian-auto-upgrade)
 
 </div>
+
+## 📈 Version History
+
+- **v2.1** - Smart version control, testing version warnings, input fixes
+- **v2.0** - Complete rewrite with VPS optimization and advanced features  
+- **v1.0** - Basic upgrade functionality
+
+See [CHANGELOG.md](CHANGELOG.md) for detailed version history.
