@@ -474,7 +474,7 @@ perform_staged_upgrade() {
     $USE_SUDO apt-get autoremove -y --purge 2>/dev/null || true
     $USE_SUDO apt-get autoclean 2>/dev/null || true
     
-    log_success "分阶段系统升级完成")
+    log_success "分阶段系统升级完成"
 }
 
 # 验证升级结果
