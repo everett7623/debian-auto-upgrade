@@ -44,14 +44,7 @@ A powerful automated upgrade script designed specifically for Debian systems, ca
 ### Manual Installation
 
 ```bash
-# Download the script
-wget https://raw.githubusercontent.com/everett7623/debian-auto-upgrade/main/debian_upgrade.sh
-
-# Make it executable
-chmod +x debian_upgrade.sh
-
-# Run the upgrade
-./debian_upgrade.sh
+wget -O debian_upgrade.sh https://raw.githubusercontent.com/everett7623/debian-auto-upgrade/main/debian_upgrade.sh && chmod +x debian_upgrade.sh && ./debian_upgrade.sh
 ```
 
 ## 📋 Usage Guide
