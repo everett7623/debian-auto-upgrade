@@ -136,4 +136,153 @@ After upgrade:
 **A**: Not recommended:
 - May cause conflicts
 - Resource competition
-- Potential service
+- Potential service interruptions
+
+## 🐛 Error-Specific Questions
+
+### Q: "Package has unmet dependencies"
+**A**: Common solutions:
+```bash
+debian_upgrade.sh --fix-only
+sudo apt --fix-broken install
+sudo apt autoremove
+```
+
+### Q: "Unable to locate package"
+**A**: Usually means:
+- Repository not updated
+- Package name changed
+- Mirror synchronization issues
+
+Solution: Script automatically handles this.
+
+### Q: GPG/Key errors
+**A**: The script automatically:
+- Updates Debian keyring
+- Refreshes GPG keys
+- Handles key transitions
+
+## 📱 Usage Scenarios
+
+### Q: Upgrading old servers (Debian 8/9)
+**A**: Special considerations:
+- Extended upgrade time
+- More potential conflicts
+- Legacy package handling
+- Additional manual steps may be needed
+
+### Q: Batch upgrading multiple servers
+**A**: Use force mode:
+```bash
+# On each server
+debian_upgrade.sh --force
+```
+
+Consider orchestration tools for large deployments.
+
+### Q: Development vs Production
+**A**: 
+- **Development**: Use any mode, test freely
+- **Production**: Always use interactive mode, create snapshots
+
+## 🔄 Post-Upgrade Questions
+
+### Q: How to verify upgrade success?
+**A**: The script automatically:
+- Verifies version numbers
+- Checks critical services
+- Tests network connectivity
+- Validates system health
+
+### Q: What if something breaks after upgrade?
+**A**: Recovery options:
+1. Restore from backup
+2. Revert VPS snapshot
+3. Use emergency repair mode
+4. Contact support with logs
+
+### Q: When to reboot?
+**A**: Reboot recommended after:
+- Kernel updates
+- Init system changes
+- Major service updates
+- Complete upgrade cycles
+
+## 💡 Best Practices
+
+### Q: How often should I upgrade?
+**A**: Recommendations:
+- **Security updates**: Monthly
+- **Point releases**: Quarterly  
+- **Major versions**: Annually
+- **Critical patches**: Immediately
+
+### Q: Should I upgrade all packages?
+**A**: The script handles this intelligently:
+- Essential packages first
+- System packages second
+- User packages last
+- Problematic packages handled specially
+
+### Q: How to minimize downtime?
+**A**: Strategies:
+- Use VPS snapshots
+- Schedule during low-traffic periods
+- Prepare rollback procedures
+- Test upgrade path first
+
+## 🎯 Specific Version Questions
+
+### Q: Upgrading from Debian 8 (Jessie)
+**A**: Special considerations:
+- Very old system, expect longer upgrade time
+- Some packages may be discontinued
+- Manual intervention might be needed
+- Consider fresh installation if heavily customized
+
+### Q: Debian 12 to 13 (Testing)
+**A**: Important notes:
+- Testing branch is unstable
+- Not recommended for production
+- May have breaking changes
+- Regular updates required
+
+### Q: LTS vs Regular releases
+**A**: 
+- **LTS**: Extended support, more stable
+- **Regular**: Latest features, shorter support
+- Script supports both paths
+
+## 📧 Support Questions
+
+### Q: Where to report bugs?
+**A**: Priority order:
+1. GitHub Issues (preferred)
+2. GitHub Discussions (questions)
+3. Email (sensitive issues)
+4. Community forums (general help)
+
+### Q: How to contribute?
+**A**: Ways to help:
+- Report bugs with detailed logs
+- Test on different configurations
+- Submit pull requests
+- Improve documentation
+- Share usage experiences
+
+### Q: What information to include in bug reports?
+**A**: Essential information:
+```bash
+# System info
+cat /etc/os-release
+uname -a
+df -h
+
+# Debug output
+debian_upgrade.sh --debug > debug.log 2>&1
+
+# Network info
+ip addr show
+cat /etc/resolv.conf
+```
+```
