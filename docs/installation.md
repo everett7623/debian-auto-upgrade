@@ -1,6 +1,3 @@
-## 📥 安装指南 (docs/installation.md)
-
-```markdown
 # Installation Guide
 
 ## 🚀 Quick Installation
