@@ -285,4 +285,3 @@ debian_upgrade.sh --debug > debug.log 2>&1
 ip addr show
 cat /etc/resolv.conf
 ```
-```
