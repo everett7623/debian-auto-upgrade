@@ -1,361 +1,296 @@
-# Contributing to Debian Auto Upgrade
+# Contributing to Debian Auto Upgrade Tool
 
-Thank you for your interest in contributing to the Debian Auto Upgrade project! We welcome contributions from the community and are pleased to have you participate.
+We love your input! We want to make contributing to this project as easy and transparent as possible, whether it's:
 
-## 🤝 Ways to Contribute
+- Reporting a bug
+- Discussing the current state of the code
+- Submitting a fix
+- Proposing new features
+- Becoming a maintainer
 
-### 1. Reporting Bugs
-- Use our [bug report template](.github/ISSUE_TEMPLATE/bug_report.md)
-- Include system information (Debian version, VPS type, etc.)
-- Provide detailed steps to reproduce the issue
-- Include log output with `--debug` flag
+## 🚀 Quick Start for Contributors
 
-### 2. Suggesting Features
-- Use our [feature request template](.github/ISSUE_TEMPLATE/feature_request.md)
-- Explain the use case and benefits
-- Consider implementation complexity
-- Discuss potential impact on existing functionality
-
-### 3. Improving Documentation
-- Fix typos and grammar errors
-- Add missing information
-- Improve clarity and examples
-- Translate documentation to other languages
-
-### 4. Code Contributions
-- Fix bugs and implement features
-- Improve error handling
-- Add support for new Debian versions
-- Optimize performance
-
-## 🚀 Getting Started
-
-### Prerequisites
-- Debian system (8+ recommended)
-- Basic knowledge of Bash scripting
-- Familiarity with APT package management
-- Git for version control
-
-### Setting Up Development Environment
-
-1. **Fork the repository**
+1. **Fork the Repository**
    ```bash
-   # Click "Fork" on GitHub, then clone your fork
+   # Fork via GitHub UI, then clone
    git clone https://github.com/YOUR_USERNAME/debian-auto-upgrade.git
    cd debian-auto-upgrade
    ```
 
-2. **Set up upstream remote**
+2. **Create a Feature Branch**
    ```bash
-   git remote add upstream https://github.com/everett7623/debian-auto-upgrade.git
+   git checkout -b feature/amazing-feature
+   # or
+   git checkout -b fix/important-bug
    ```
 
-3. **Create a development branch**
+3. **Make Your Changes**
+   - Edit the code
+   - Test your changes
+   - Update documentation if needed
+
+4. **Test Thoroughly**
    ```bash
-   git checkout -b feature/your-feature-name
+   # Check syntax
+   bash -n debian_upgrade.sh
+   
+   # Test basic functionality
+   ./debian_upgrade.sh --check
+   ./debian_upgrade.sh --help
+   
+   # Test in different environments if possible
    ```
 
-4. **Install development dependencies**
+5. **Commit and Push**
    ```bash
-   # For testing and linting
-   sudo apt update
-   sudo apt install shellcheck bats
+   git add .
+   git commit -m "Add amazing feature"
+   git push origin feature/amazing-feature
    ```
 
-## 💻 Development Guidelines
+6. **Submit a Pull Request**
+   - Go to GitHub and create a pull request
+   - Describe your changes clearly
+   - Reference any related issues
+
+## 📋 Development Guidelines
 
 ### Code Style
 
-1. **Shell Script Standards**
-   - Use `#!/bin/bash` shebang
-   - Follow Google Shell Style Guide
-   - Use 4 spaces for indentation
-   - Keep lines under 100 characters
+#### Bash Scripting Best Practices
+- Use `#!/bin/bash` shebang
+- Enable strict mode with `set -e`
+- Use meaningful variable names
+- Quote variables properly: `"$variable"`
+- Use functions for reusable code
+- Add comments for complex logic
 
-2. **Variable Naming**
-   - Use lowercase with underscores: `current_version`
-   - Constants in uppercase: `MAX_RETRIES`
-   - Local variables: `local var_name`
+#### Example Code Style:
+```bash
+# Good
+local version_id=""
+if [[ -f /etc/os-release ]]; then
+    version_id=$(grep "^VERSION_ID=" /etc/os-release | cut -d'"' -f2)
+    log_debug "Found version: '$version_id'"
+fi
 
-3. **Function Guidelines**
-   ```bash
-   # Good function structure
-   function_name() {
-       local param1="$1"
-       local param2="$2"
-       
-       # Validation
-       [[ -z "$param1" ]] && {
-           log_error "Parameter required"
-           return 1
-       }
-       
-       # Main logic
-       log_info "Performing action..."
-       
-       # Return appropriate exit code
-       return 0
-   }
-   ```
+# Avoid
+ver=$(cat /etc/os-release | grep VERSION_ID | sed 's/.*="//' | sed 's/"//')
+```
 
-4. **Error Handling**
-   ```bash
-   # Always handle errors
-   if ! command_that_might_fail; then
-       log_error "Command failed"
-       return 1
-   fi
-   
-   # Use proper exit codes
-   exit 0  # Success
-   exit 1  # General error
-   exit 2  # Misuse of shell builtins
-   ```
+### Error Handling
+
+#### Always Include Error Handling:
+```bash
+# Good
+if ! command_that_might_fail; then
+    log_error "Command failed"
+    return 1
+fi
+
+# Better
+command_that_might_fail || {
+    log_error "Command failed with exit code $?"
+    return 1
+}
+```
+
+#### Use Proper Exit Codes:
+- `0` - Success
+- `1` - General error
+- `2` - Misuse of shell command
+- `3-125` - Custom error codes
+- `126` - Command not executable
+- `127` - Command not found
 
 ### Logging Standards
 
+#### Use Appropriate Log Levels:
 ```bash
-# Use consistent logging functions
-log_info "Informational message"
-log_success "Success message"
-log_warning "Warning message"
-log_error "Error message"
-log_debug "Debug message (only in debug mode)"
+log_debug "Detailed debugging information"
+log_info "General information"
+log_warning "Warning - something might be wrong"
+log_error "Error - something went wrong"
+log_success "Success - operation completed"
 ```
+
+#### Log Message Format:
+- Start with capital letter
+- Be descriptive but concise
+- Include relevant context
+- Use present tense
 
 ### Testing Requirements
 
-1. **Unit Tests**
-   ```bash
-   # Run existing tests
-   ./tests/test_basic.sh
-   
-   # Add tests for new functions
-   # Use BATS framework for structured testing
-   ```
+#### Before Submitting:
+1. **Syntax Check**: `bash -n debian_upgrade.sh`
+2. **Basic Functionality**: Test all major functions
+3. **Error Scenarios**: Test error handling
+4. **Different Environments**: Test on different Debian versions if possible
 
-2. **Integration Tests**
-   ```bash
-   # Test on clean Debian installations
-   # Verify different upgrade paths
-   # Test VPS-specific scenarios
-   ```
+#### Test Coverage Areas:
+- Version detection
+- Mirror selection
+- Upgrade simulation (`--check` mode)
+- Error recovery
+- User input handling
+- VPS environment detection
 
-3. **Manual Testing Checklist**
-   - [ ] Script works on different Debian versions
-   - [ ] Error conditions are handled gracefully
-   - [ ] Backup and restore functionality works
-   - [ ] VPS-specific fixes are effective
-   - [ ] Log output is clear and helpful
+## 🐛 Bug Reports
 
-## 📝 Commit Guidelines
+### Before Creating an Issue:
+1. **Search existing issues** - Your issue might already be reported
+2. **Test with latest version** - Make sure you're using the current version
+3. **Reproduce the bug** - Try to reproduce it consistently
 
-### Commit Message Format
+### Bug Report Template:
+```markdown
+**Bug Description**
+A clear and concise description of what the bug is.
+
+**To Reproduce**
+Steps to reproduce the behavior:
+1. Go to '...'
+2. Click on '....'
+3. Scroll down to '....'
+4. See error
+
+**Expected Behavior**
+A clear description of what you expected to happen.
+
+**System Information**
+- Debian Version: [e.g. Debian 11 Bullseye]
+- Script Version: [e.g. 2.2]
+- Environment: [e.g. VPS, Physical, Container]
+- Virtualization: [e.g. KVM, OpenVZ, VMware]
+
+**Debug Output**
+If applicable, add the output from running with --debug flag:
 ```
-type(scope): brief description
-
-Detailed explanation of changes (if needed)
-
-Closes #issue_number
+./debian_upgrade.sh --debug --check
 ```
 
-### Types
-- `feat`: New feature
-- `fix`: Bug fix
-- `docs`: Documentation changes
-- `style`: Code style changes (formatting, etc.)
-- `refactor`: Code refactoring
-- `test`: Adding or updating tests
-- `chore`: Maintenance tasks
+**Additional Context**
+Add any other context about the problem here.
+```
 
-### Examples
-```bash
-feat(upgrade): add support for Debian 13 (Trixie)
-fix(vps): resolve OpenVZ container detection issue
-docs(readme): update installation instructions
-test(core): add unit tests for version detection
+## ✨ Feature Requests
+
+### Before Requesting:
+1. Check if the feature already exists
+2. Search existing feature requests
+3. Consider if it fits the project's scope
+
+### Feature Request Template:
+```markdown
+**Is your feature request related to a problem?**
+A clear description of what the problem is. Ex. I'm always frustrated when [...]
+
+**Describe the solution you'd like**
+A clear description of what you want to happen.
+
+**Describe alternatives you've considered**
+A clear description of any alternative solutions you've considered.
+
+**Use Cases**
+Describe specific use cases where this feature would be helpful.
+
+**Implementation Ideas**
+If you have ideas about how this could be implemented, share them here.
 ```
 
 ## 🔍 Code Review Process
 
-### Before Submitting PR
+### What We Look For:
+1. **Functionality** - Does it work as intended?
+2. **Safety** - Is it safe for production systems?
+3. **Code Quality** - Is it well-written and maintainable?
+4. **Documentation** - Is it properly documented?
+5. **Testing** - Has it been adequately tested?
 
-1. **Self Review**
-   - [ ] Code follows style guidelines
-   - [ ] All tests pass
-   - [ ] Documentation is updated
-   - [ ] Commit messages are clear
+### Review Checklist:
+- [ ] Code follows project style guidelines
+- [ ] Includes appropriate error handling
+- [ ] Has proper logging and user feedback
+- [ ] Maintains backward compatibility
+- [ ] Includes documentation updates
+- [ ] Has been tested in multiple scenarios
 
-2. **Testing**
-   - [ ] Test on multiple Debian versions
-   - [ ] Verify VPS compatibility
-   - [ ] Check error handling
-   - [ ] Validate log output
+## 📚 Documentation
 
-3. **Documentation**
-   - [ ] Update README if needed
-   - [ ] Add/update function documentation
-   - [ ] Update CHANGELOG.md
-   - [ ] Add examples if applicable
+### What Needs Documentation:
+- New features and options
+- Changed behavior
+- Configuration examples
+- Troubleshooting steps
+- API/function changes
 
-### Pull Request Template
+### Documentation Style:
+- Use clear, simple language
+- Provide examples
+- Include expected output
+- Update relevant files (README, CHANGELOG, etc.)
 
-When creating a PR, please:
+## 🏷️ Versioning and Releases
 
-1. Use our [PR template](.github/PULL_REQUEST_TEMPLATE.md)
-2. Reference related issues
-3. Provide testing information
-4. Include screenshots/logs if relevant
+### Version Numbering:
+We follow [Semantic Versioning](https://semver.org/):
+- **MAJOR.MINOR.PATCH** (e.g., 2.1.0)
+- **MAJOR**: Breaking changes
+- **MINOR**: New features (backward compatible)
+- **PATCH**: Bug fixes (backward compatible)
 
-### Review Criteria
+### Changelog Updates:
+When contributing, update `CHANGELOG.md` with:
+- Brief description of changes
+- Category: Added, Changed, Fixed, Removed, Security
+- Reference to related issues/PRs
 
-PRs will be reviewed for:
-- **Functionality**: Does it work as intended?
-- **Compatibility**: Works across supported Debian versions?
-- **Error Handling**: Graceful failure and recovery?
-- **Code Quality**: Readable, maintainable, follows guidelines?
-- **Testing**: Adequate test coverage?
-- **Documentation**: Clear and complete?
+## 🤝 Community Guidelines
 
-## 🛠️ Development Tools
+### Be Respectful:
+- Use welcoming and inclusive language
+- Be respectful of differing viewpoints
+- Accept constructive criticism gracefully
+- Focus on what's best for the community
 
-### Recommended Tools
+### Communication Channels:
+- **Issues**: Bug reports and feature requests
+- **Discussions**: General questions and ideas
+- **Pull Requests**: Code contributions
+- **Email**: [everett7623@gmail.com](mailto:everett7623@gmail.com) for private matters
 
-1. **ShellCheck** - Static analysis
-   ```bash
-   shellcheck debian_upgrade.sh
-   ```
+## 🛡️ Security
 
-2. **BATS** - Bash testing framework
-   ```bash
-   bats tests/test_basic.bats
-   ```
+### Reporting Security Issues:
+If you discover a security vulnerability, please:
+1. **Don't create a public issue**
+2. **Email us directly**: [everett7623@gmail.com](mailto:everett7623@gmail.com)
+3. **Include detailed information** about the vulnerability
+4. **Wait for confirmation** before disclosing publicly
 
-3. **Git Hooks** - Pre-commit validation
-   ```bash
-   # Install pre-commit hooks
-   cp scripts/pre-commit .git/hooks/
-   chmod +x .git/hooks/pre-commit
-   ```
+### Security Considerations:
+- This script runs with elevated privileges
+- Changes affect system packages and configurations
+- Always consider security implications of modifications
+- Test security-related changes thoroughly
 
-### Debugging Tips
+## 📝 License
 
-1. **Enable Debug Mode**
-   ```bash
-   ./debian_upgrade.sh --debug
-   ```
+By contributing, you agree that your contributions will be licensed under the same MIT License that covers the project. Feel free to contact us if that's a concern.
 
-2. **Test in Containers**
-   ```bash
-   # Use Docker for safe testing
-   docker run -it debian:11 bash
-   ```
+## ❓ Questions?
 
-3. **Validate with Different Scenarios**
-   - Clean installations
-   - Systems with issues
-   - Various VPS providers
-   - Different network conditions
+If you have questions about contributing, feel free to:
+- Open a [Discussion](https://github.com/everett7623/debian-auto-upgrade/discussions)
+- Email us at [everett7623@gmail.com](mailto:everett7623@gmail.com)
+- Check our [FAQ section](README.md#troubleshooting)
 
-## 🐛 Bug Report Guidelines
+## 🎉 Recognition
 
-### Information to Include
+Contributors will be recognized in:
+- README acknowledgments
+- Release notes
+- Contributor list (coming soon)
 
-1. **System Information**
-   ```bash
-   cat /etc/os-release
-   cat /etc/debian_version
-   uname -a
-   ```
-
-2. **Script Output**
-   ```bash
-   # Run with debug mode
-   ./debian_upgrade.sh --debug 2>&1 | tee debug.log
-   ```
-
-3. **Environment Details**
-   - VPS provider (if applicable)
-   - Network configuration
-   - Any customizations made
-
-### Severity Levels
-
-- **Critical**: System becomes unusable
-- **High**: Major functionality broken
-- **Medium**: Feature partially working
-- **Low**: Minor issues or enhancements
-
-## 📚 Documentation Standards
-
-### Code Documentation
-
-```bash
-# Function documentation template
-#
-# Description: Brief description of what the function does
-# Parameters:
-#   $1 - First parameter description
-#   $2 - Second parameter description
-# Returns:
-#   0 - Success
-#   1 - Error condition
-# Globals:
-#   GLOBAL_VAR - Global variable used
-#
-function_name() {
-    # Implementation
-}
-```
-
-### README Updates
-
-When adding features, update:
-- Feature list
-- Usage examples
-- Command-line options
-- System requirements
-- Supported versions
-
-## 🎯 Priority Areas
-
-We especially welcome contributions in these areas:
-
-1. **VPS Compatibility**
-   - Support for new VPS providers
-   - Container-specific optimizations
-   - Cloud platform integrations
-
-2. **Error Recovery**
-   - Better error detection
-   - Automatic fix strategies
-   - Recovery procedures
-
-3. **Performance**
-   - Faster upgrade processes
-   - Reduced download sizes
-   - Parallel operations
-
-4. **Internationalization**
-   - Multi-language support
-   - Regional mirror optimization
-   - Locale-specific fixes
-
-## 🏆 Recognition
-
-Contributors will be:
-- Listed in the project README
-- Mentioned in release notes
-- Added to the contributors section
-
-## 📞 Getting Help
-
-Need help contributing?
-
-- 💬 [GitHub Discussions](https://github.com/everett7623/debian-auto-upgrade/discussions)
-- 📧 Email: everett7623@gmail.com
-- 🐛 [Issues](https://github.com/everett7623/debian-auto-upgrade/issues)
-
-## 📄 License
-
-By contributing to this project, you agree that your contributions will be licensed under the same [MIT License](LICENSE) that covers the project.
+Thank you for helping make this project better! 🚀
