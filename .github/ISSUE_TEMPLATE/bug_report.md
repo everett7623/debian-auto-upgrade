@@ -1,35 +1,83 @@
----
 name: Bug Report
-about: Create a report to help us improve
-title: '[BUG] Brief description of the issue'
-labels: 'bug'
-assignees: 'everett7623'
----
+description: File a bug report to help us improve
+title: "[Bug]: "
+labels: ["bug", "triage"]
+projects: ["everett7623/1"]
+assignees:
+  - everett7623
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to fill out this bug report! 🐛
+        
+        Please provide as much detail as possible to help us understand and reproduce the issue.
 
-## 🐛 Bug Description
-A clear and concise description of what the bug is.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-flight Checklist
+      description: Please confirm you have completed these steps
+      options:
+        - label: I have searched existing issues to ensure this bug hasn't been reported before
+          required: true
+        - label: I am using the latest version of the script
+          required: true
+        - label: I have tested the script syntax with `bash -n debian_upgrade.sh`
+          required: true
 
-## 🔄 Steps to Reproduce
-1. Go to '...'
-2. Run command '...'
-3. See error
+  - type: textarea
+    id: bug-description
+    attributes:
+      label: Bug Description
+      description: A clear and concise description of what the bug is
+      placeholder: Describe what happened...
+    validations:
+      required: true
 
-## ✅ Expected Behavior
-A clear and concise description of what you expected to happen.
+  - type: textarea
+    id: reproduce-steps
+    attributes:
+      label: Steps to Reproduce
+      description: Detailed steps to reproduce the behavior
+      placeholder: |
+        1. Run the command '...'
+        2. Select option '....'
+        3. See error at step '....'
+        4. Error message appears
+    validations:
+      required: true
 
-## ❌ Actual Behavior
-A clear and concise description of what actually happened.
+  - type: textarea
+    id: expected-behavior
+    attributes:
+      label: Expected Behavior
+      description: A clear description of what you expected to happen
+      placeholder: What should have happened instead?
+    validations:
+      required: true
 
-## 📊 System Information
-- Debian Version: [e.g., Debian 11 (Bullseye)]
-- Architecture: [e.g., x86_64, ARM64]
-- Environment: [e.g., Physical server, VPS, Container]
-- VPS Provider: [e.g., AWS, DigitalOcean, Vultr]
+  - type: dropdown
+    id: debian-version
+    attributes:
+      label: Debian Version
+      description: What version of Debian are you running?
+      options:
+        - Debian 8 (Jessie)
+        - Debian 9 (Stretch)
+        - Debian 10 (Buster)
+        - Debian 11 (Bullseye)
+        - Debian 12 (Bookworm)
+        - Debian 13 (Trixie)
+        - Other (please specify in additional context)
+    validations:
+      required: true
 
-## 📋 Command Output
-Please provide the output of running the script with `--debug` flag:
-
-```bash
-./debian_upgrade.sh --debug
-<details>
-<summary>Debug Output (click to expand)</summary>
+  - type: dropdown
+    id: environment
+    attributes:
+      label: Environment Type
+      description: What type of environment are you running on?
+      options:
+        - Physical Server
+        - VPS (
