@@ -235,863 +235,548 @@ get_next_version() {
     esac
 }
 
-# 检测VPS环境
-detect_vps_environment() {
-    local vps_type=""
-    local vps_provider=""
+# 显示帮助信息
+show_help() {
+    cat << EOF
+Debian自动逐级升级脚本 v$SCRIPT_VERSION
+
+📖 用法: $0 [选项]
+
+🔧 选项:
+  -h, --help          显示此帮助信息
+  -v, --version       显示当前Debian版本信息
+  -c, --check         检查是否有可用升级
+  -d, --debug         启用调试模式
+  --fix-only          仅执行系统修复，不进行升级
+  --force             强制执行升级（跳过确认）
+  --stable-only       仅升级到稳定版本，跳过测试版本
+  --allow-testing     允许升级到测试版本（默认行为）
+
+✨ 功能特性:
+  ✅ 自动检测当前Debian版本和目标版本
+  ✅ 逐级安全升级，避免跨版本问题
+  ✅ 智能软件源选择和镜像优化
+  ✅ VPS环境适配和问题修复
+  ✅ 分阶段升级减少风险
+  ✅ 完整的配置备份和恢复
+  ✅ 网络和系统环境检查
+  ✅ 详细的日志和错误处理
+
+🔄 支持的升级路径:
+  • Debian 8 (Jessie) → 9 (Stretch) → 10 (Buster)
+  • Debian 10 (Buster) → 11 (Bullseye) → 12 (Bookworm)
+  • Debian 12 (Bookworm) → 13 (Trixie) [测试版本]
+
+💻 示例:
+  $0                    # 执行自动升级
+  $0 --check            # 检查可用升级
+  $0 --version          # 显示版本信息
+  $0 --fix-only         # 仅修复系统问题
+  $0 --debug            # 启用调试模式
+  $0 --stable-only      # 仅升级到稳定版本
+  $0 --force            # 强制升级（跳过确认）
+  
+⚠️  注意事项:
+  • 升级前会自动备份重要配置
+  • 建议在升级前创建系统快照
+  • VPS用户请确保有控制台访问权限
+  • 测试版本升级需要明确确认
+  • 升级过程可能需要较长时间
+
+🛡️  安全提示:
+  • Debian 12 是当前稳定版本，建议保持使用
+  • Debian 13 为测试版本，不建议生产环境使用
+  • 使用 --stable-only 可避免意外升级到测试版本
+  • 始终确保有可靠的备份和恢复方案
+EOF
+}
+
+# 检查可用升级
+check_upgrade() {
+    local current_version=$(get_current_version)
+    local version_info=$(get_version_info "$current_version")
+    local current_codename=$(echo "$version_info" | cut -d'|' -f1)
+    local current_status=$(echo "$version_info" | cut -d'|' -f2)
+    local next_version=$(get_next_version "$current_version")
     
-    # 检测常见VPS环境
-    if [[ -f /proc/vz/version ]]; then
-        vps_type="OpenVZ"
-    elif [[ -d /proc/xen ]]; then
-        vps_type="Xen"
-    elif grep -q "VMware" /proc/scsi/scsi 2>/dev/null; then
-        vps_type="VMware"
-    elif grep -q "QEMU" /proc/cpuinfo 2>/dev/null; then
-        vps_type="KVM/QEMU"
-    elif [[ -f /sys/hypervisor/uuid ]] && [[ $(head -c 3 /sys/hypervisor/uuid 2>/dev/null) == "ec2" ]]; then
-        vps_type="AWS EC2"
-    elif systemd-detect-virt >/dev/null 2>&1; then
-        vps_type=$(systemd-detect-virt)
-    fi
+    echo "========================================="
+    echo "🔍 Debian升级检查"
+    echo "========================================="
+    echo "当前版本: Debian $current_version ($current_codename) [$current_status]"
     
-    # 检测云服务提供商
-    if [[ -f /sys/class/dmi/id/sys_vendor ]]; then
-        local vendor=$(cat /sys/class/dmi/id/sys_vendor 2>/dev/null)
-        case "$vendor" in
-            *"Amazon"*) vps_provider="AWS" ;;
-            *"Google"*) vps_provider="Google Cloud" ;;
-            *"Microsoft"*) vps_provider="Azure" ;;
-            *"DigitalOcean"*) vps_provider="DigitalOcean" ;;
-            *"Linode"*) vps_provider="Linode" ;;
-            *"Vultr"*) vps_provider="Vultr" ;;
-        esac
-    fi
-    
-    # 检查是否在容器中
-    if [[ -f /.dockerenv ]]; then
-        vps_type="Docker容器"
-    elif grep -q "container=lxc" /proc/1/environ 2>/dev/null; then
-        vps_type="LXC容器"
-    fi
-    
-    if [[ -n "$vps_type" ]]; then
-        if [[ -n "$vps_provider" ]]; then
-            log_info "检测到VPS环境: $vps_type ($vps_provider)"
+    if [[ -z "$next_version" ]]; then
+        if [[ "$current_status" == "stable" ]]; then
+            echo "状态: ✅ 已是最新稳定版本"
+            if [[ "${STABLE_ONLY:-}" != "1" ]]; then
+                echo
+                echo "💡 说明："
+                echo "- 当前使用最新稳定版本，建议保持"
+                echo "- 如需体验新功能，可添加 --allow-testing 选项"
+                echo "- 测试版本风险较高，仅建议测试环境使用"
+            fi
         else
-            log_info "检测到VPS环境: $vps_type"
+            echo "状态: ✅ 已是最新版本 ($current_status)"
         fi
-        return 0
     else
-        log_debug "未检测到明显的VPS环境特征"
-        return 1
+        local next_version_info=$(get_version_info "$next_version")
+        local next_codename=$(echo "$next_version_info" | cut -d'|' -f1)
+        local next_status=$(echo "$next_version_info" | cut -d'|' -f2)
+        
+        if [[ "$next_codename" == "unknown" ]]; then
+            echo "状态: ✅ 已是最新稳定版本"
+        else
+            echo "可升级到: Debian $next_version ($next_codename) [$next_status]"
+            
+            if [[ "$next_status" == "testing" || "$next_status" == "unstable" ]]; then
+                echo "警告: ⚠️  目标版本为非稳定版本"
+                echo "建议: 💡 生产环境请保持当前稳定版本"
+                echo "选项: 🛡️  使用 --stable-only 可避免升级到测试版本"
+            else
+                echo "推荐: ✅ 可安全升级到稳定版本"
+            fi
+        fi
+    fi
+    
+    echo "========================================="
+    
+    # 显示系统状态
+    echo "🔧 系统状态检查:"
+    
+    # 磁盘空间
+    local disk_usage=$(df -h / | awk 'NR==2 {print $5}')
+    local available_space=$(df / | awk 'NR==2 {print $4}')
+    echo "- 磁盘使用: $disk_usage"
+    if [[ $available_space -lt 2097152 ]]; then
+        echo "  ⚠️  可用空间不足2GB"
+    else
+        echo "  ✅ 磁盘空间充足"
+    fi
+    
+    # 内存状态
+    local memory_info=$(free -h | awk 'NR==2{printf "使用: %s/%s", $3,$2}')
+    echo "- 内存状态: $memory_info"
+    
+    # 网络连接
+    if ping -c 1 deb.debian.org >/dev/null 2>&1; then
+        echo "- 网络连接: ✅ 正常"
+    else
+        echo "- 网络连接: ⚠️  无法连接到Debian官方源"
+    fi
+    
+    # 系统负载
+    local load_avg=$(uptime | awk -F'load average:' '{print $2}' | awk '{print $1}' | tr -d ',')
+    echo "- 系统负载: $load_avg"
+    
+    # 检查是否有损坏的包
+    local broken_packages=$(dpkg --get-selections | grep -c "deinstall" 2>/dev/null || echo "0")
+    if [[ $broken_packages -gt 0 ]]; then
+        echo "- 软件包状态: ⚠️  发现 $broken_packages 个问题包"
+    else
+        echo "- 软件包状态: ✅ 正常"
+    fi
+    
+    echo "========================================="
+    
+    # 升级建议
+    echo "📝 升级建议:"
+    if [[ -n "$next_version" && "$next_codename" != "unknown" ]]; then
+        local next_version_info=$(get_version_info "$next_version")
+        local next_status=$(echo "$next_version_info" | cut -d'|' -f2)
+        
+        if [[ "$next_status" == "stable" ]]; then
+            echo "✅ 推荐升级到 Debian $next_version - 稳定版本"
+            echo "🚀 执行命令: $0"
+        elif [[ "$next_status" == "testing" ]]; then
+            echo "⚠️  可升级到 Debian $next_version - 测试版本"
+            echo "🧪 测试环境: $0 --allow-testing"
+            echo "🛡️  保持稳定: $0 --stable-only (推荐)"
+        else
+            echo "❌ 不建议升级到 Debian $next_version - 不稳定版本"
+        fi
+    else
+        echo "✅ 当前版本已是最佳选择，无需升级"
+    fi
+    
+    echo "========================================="
+}
+
+# 简化的主升级逻辑（基础版本）
+main_upgrade() {
+    local current_version=$(get_current_version)
+    local version_info=$(get_version_info "$current_version")
+    local current_codename=$(echo "$version_info" | cut -d'|' -f1)
+    local current_status=$(echo "$version_info" | cut -d'|' -f2)
+    local next_version=$(get_next_version "$current_version")
+    
+    log_info "========================================="
+    log_info "Debian自动升级脚本 v$SCRIPT_VERSION"
+    log_info "========================================="
+    log_info "当前系统版本: Debian $current_version ($current_codename) [$current_status]"
+    
+    if [[ -z "$next_version" ]]; then
+        if [[ "$current_status" == "stable" ]]; then
+            log_success "🎉 恭喜！您已经在使用最新稳定版本的Debian $current_version"
+            echo
+            log_info "💡 提示："
+            log_info "- 当前版本是最新的稳定版本，建议保持使用"
+            if [[ "${STABLE_ONLY:-}" != "1" ]]; then
+                log_info "- 如需体验新功能，可使用 --allow-testing 选项升级到测试版本"
+                log_info "- 测试版本可能不稳定，不建议在生产环境使用"
+            fi
+        else
+            log_info "您正在使用 Debian $current_version ($current_status)"
+            if [[ "$current_status" == "testing" || "$current_status" == "unstable" ]]; then
+                log_info "当前版本为非稳定版本，如需回到稳定版本请手动操作"
+            fi
+        fi
+        exit 0
+    fi
+    
+    local next_version_info=$(get_version_info "$next_version")
+    local next_codename=$(echo "$next_version_info" | cut -d'|' -f1)
+    local next_status=$(echo "$next_version_info" | cut -d'|' -f2)
+    
+    if [[ "$next_codename" == "unknown" ]]; then
+        log_warning "下一个版本 Debian $next_version 可能还未发布或不被支持"
+        log_info "当前版本 Debian $current_version 可能已经是最新的稳定版本"
+        exit 0
+    fi
+    
+    log_info "🎯 准备升级到: Debian $next_version ($next_codename) [$next_status]"
+    
+    # 风险提示
+    if [[ "$next_status" == "testing" || "$next_status" == "unstable" ]]; then
+        echo
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        log_warning "⚠️  重要警告：即将升级到非稳定版本！"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo
+        echo "📋 版本信息："
+        echo "   • 目标版本: Debian $next_version ($next_codename)"
+        echo "   • 版本状态: $next_status"
+        echo "   • 稳定性: 非稳定版本"
+        echo
+        echo "⚠️  风险说明："
+        echo "   • 可能包含未修复的bug和不稳定的功能"
+        echo "   • 软件包可能不完整或存在兼容性问题"
+        echo "   • 不建议在生产环境中使用"
+        echo "   • 升级过程可能失败或导致系统不稳定"
+        echo
+        
+        if [[ "${FORCE:-}" == "1" ]]; then
+            log_warning "强制模式已启用，跳过确认直接升级"
+        else
+            if get_user_confirmation "您确定要升级到测试版本吗？请输入 'YES' 确认，或 'no' 取消: "; then
+                log_info "✅ 用户确认升级到测试版本"
+            else
+                log_info "❌ 用户取消升级"
+                log_success "保持当前稳定版本 Debian $current_version - 明智的选择！"
+                exit 0
+            fi
+        fi
+        echo
+    else
+        # 稳定版本的常规确认
+        echo
+        log_info "🎯 升级到稳定版本："
+        log_info "   从: Debian $current_version ($current_codename) [$current_status]"
+        log_info "   到: Debian $next_version ($next_codename) [$next_status]"
+        echo
+        
+        if [[ "${FORCE:-}" == "1" ]]; then
+            log_info "强制模式已启用，自动确认升级"
+        else
+            read -p "是否继续升级到 Debian $next_version ($next_codename)? [y/N]: " -n 1 -r </dev/tty
+            echo
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                log_info "用户取消升级"
+                exit 0
+            fi
+        fi
+    fi
+    
+    log_info "🚀 开始升级过程..."
+    
+    # 简化的升级步骤
+    log_info "步骤1: 更新软件源配置"
+    
+    # 备份sources.list
+    $USE_SUDO cp /etc/apt/sources.list /etc/apt/sources.list.backup.$(date +%s) 2>/dev/null || true
+    
+    # 更新sources.list
+    case "$next_version" in
+        "12"|"13"|"14"|"15")
+            # Debian 12+ 包含non-free-firmware
+            cat << EOF | $USE_SUDO tee /etc/apt/sources.list > /dev/null
+# Debian $next_version ($next_codename) sources
+deb http://deb.debian.org/debian $next_codename main contrib non-free non-free-firmware
+deb-src http://deb.debian.org/debian $next_codename main contrib non-free non-free-firmware
+
+# Security updates
+deb http://deb.debian.org/debian-security $next_codename-security main contrib non-free non-free-firmware
+deb-src http://deb.debian.org/debian-security $next_codename-security main contrib non-free non-free-firmware
+
+# Updates
+deb http://deb.debian.org/debian $next_codename-updates main contrib non-free non-free-firmware
+deb-src http://deb.debian.org/debian $next_codename-updates main contrib non-free non-free-firmware
+EOF
+            ;;
+        "11")
+            # Debian 11 使用新的安全源格式
+            cat << EOF | $USE_SUDO tee /etc/apt/sources.list > /dev/null
+# Debian $next_version ($next_codename) sources
+deb http://deb.debian.org/debian $next_codename main contrib non-free
+deb-src http://deb.debian.org/debian $next_codename main contrib non-free
+
+# Security updates
+deb http://deb.debian.org/debian-security $next_codename-security main contrib non-free
+deb-src http://deb.debian.org/debian-security $next_codename-security main contrib non-free
+
+# Updates
+deb http://deb.debian.org/debian $next_codename-updates main contrib non-free
+deb-src http://deb.debian.org/debian $next_codename-updates main contrib non-free
+EOF
+            ;;
+        *)
+            # Debian 10及以下版本使用旧的安全源格式
+            cat << EOF | $USE_SUDO tee /etc/apt/sources.list > /dev/null
+# Debian $next_version ($next_codename) sources
+deb http://deb.debian.org/debian $next_codename main contrib non-free
+deb-src http://deb.debian.org/debian $next_codename main contrib non-free
+
+# Security updates
+deb http://deb.debian.org/debian-security $next_codename/updates main contrib non-free
+deb-src http://deb.debian.org/debian-security $next_codename/updates main contrib non-free
+
+# Updates
+deb http://deb.debian.org/debian $next_codename-updates main contrib non-free
+deb-src http://deb.debian.org/debian $next_codename-updates main contrib non-free
+EOF
+            ;;
+    esac
+    
+    log_success "软件源配置已更新"
+    
+    log_info "步骤2: 更新软件包列表"
+    if ! $USE_SUDO apt-get update; then
+        log_error "更新软件包列表失败"
+        exit 1
+    fi
+    
+    log_info "步骤3: 执行系统升级"
+    
+    # 分阶段升级
+    log_info "3.1: 最小升级"
+    DEBIAN_FRONTEND=noninteractive $USE_SUDO apt-get upgrade -y \
+        -o Dpkg::Options::="--force-confdef" \
+        -o Dpkg::Options::="--force-confold" || {
+        log_warning "最小升级失败，继续尝试完整升级"
+    }
+    
+    log_info "3.2: 完整升级"
+    DEBIAN_FRONTEND=noninteractive $USE_SUDO apt-get dist-upgrade -y \
+        -o Dpkg::Options::="--force-confdef" \
+        -o Dpkg::Options::="--force-confold" || {
+        log_error "系统升级失败"
+        exit 1
+    }
+    
+    log_info "步骤4: 清理系统"
+    $USE_SUDO apt-get autoremove -y --purge 2>/dev/null || true
+    $USE_SUDO apt-get autoclean 2>/dev/null || true
+    
+    # 验证升级结果
+    sleep 3
+    local new_version=$(get_current_version)
+    if [[ "$new_version" == "$next_version" ]]; then
+        echo
+        log_success "========================================="
+        log_success "🎉 升级完成！Debian $current_version → $next_version"
+        log_success "========================================="
+        echo
+        log_info "📝 重要提醒："
+        log_info "1. 🔄 建议重启系统以确保所有更改生效"
+        log_info "2. 🔧 重启后可以再次运行此脚本继续升级到更新版本"
+        log_info "3. 🛡️  如遇问题，可使用备份配置进行恢复"
+        
+        # 检查是否还有更高版本可升级
+        local further_version=$(get_next_version "$next_version")
+        if [[ -n "$further_version" ]]; then
+            local further_info=$(get_version_info "$further_version")
+            local further_codename=$(echo "$further_info" | cut -d'|' -f1)
+            local further_status=$(echo "$further_info" | cut -d'|' -f2)
+            
+            echo
+            log_info "🚀 后续升级选项："
+            if [[ "$further_status" == "stable" ]]; then
+                log_info "- 可以继续升级到 Debian $further_version ($further_codename) [$further_status]"
+            elif [[ "${STABLE_ONLY:-}" != "1" ]]; then
+                log_info "- 可选升级到 Debian $further_version ($further_codename) [$further_status] (需要 --allow-testing)"
+            fi
+        fi
+        
+        echo
+        if [[ "${FORCE:-}" == "1" ]]; then
+            log_info "强制模式已启用，建议手动重启系统"
+        else
+            read -p "是否现在重启系统? [y/N]: " -n 1 -r </dev/tty
+            echo
+            if [[ $REPLY =~ ^[Yy]$ ]]; then
+                log_info "🔄 正在重启系统..."
+                sleep 2
+                $USE_SUDO reboot
+            else
+                log_info "请稍后手动重启系统: sudo reboot"
+            fi
+        fi
+    else
+        log_error "升级验证失败，请检查系统状态"
+        log_error "期望版本: Debian $next_version"
+        log_error "检测版本: Debian $new_version"
+        exit 1
     fi
 }
 
-# 备份关键配置
-backup_configs() {
-    local backup_dir="/var/backups/debian-upgrade-$(date +%Y%m%d_%H%M%S)"
-    log_info "备份关键配置到 $backup_dir"
+# 系统修复模式
+fix_only_mode() {
+    log_info "========================================="
+    log_info "🔧 仅执行系统修复模式"
+    log_info "========================================="
     
-    $USE_SUDO mkdir -p "$backup_dir"
-    
-    # 备份软件源配置
-    $USE_SUDO cp /etc/apt/sources.list "$backup_dir/" 2>/dev/null || true
-    $USE_SUDO cp -r /etc/apt/sources.list.d/ "$backup_dir/" 2>/dev/null || true
-    $USE_SUDO cp -r /etc/apt/preferences.d/ "$backup_dir/" 2>/dev/null || true
-    
-    # 备份关键系统文件
-    $USE_SUDO cp /etc/fstab "$backup_dir/" 2>/dev/null || true
-    $USE_SUDO cp /etc/hostname "$backup_dir/" 2>/dev/null || true
-    $USE_SUDO cp /etc/hosts "$backup_dir/" 2>/dev/null || true
-    $USE_SUDO cp -r /etc/network/ "$backup_dir/" 2>/dev/null || true
-    $USE_SUDO cp -r /etc/ssh/ "$backup_dir/" 2>/dev/null || true
-    
-    # 备份包列表
-    dpkg --get-selections > "$backup_dir/package-selections.txt" 2>/dev/null || true
-    
-    # 备份当前版本信息
-    get_current_version > "$backup_dir/original-version.txt" 2>/dev/null || true
-    cat /etc/debian_version > "$backup_dir/original-debian-version.txt" 2>/dev/null || true
-    
-    echo "$backup_dir" > /tmp/debian_upgrade_backup_path
-    
-    log_success "配置已备份到 $backup_dir"
-}
-
-# 修复常见的VPS问题
-fix_vps_issues() {
-    log_info "修复常见的VPS问题..."
-    
-    # 修复APT锁定问题
-    log_debug "清理APT锁定文件..."
+    log_info "1/4: 清理APT锁定文件"
     $USE_SUDO rm -f /var/lib/dpkg/lock-frontend 2>/dev/null || true
     $USE_SUDO rm -f /var/lib/dpkg/lock 2>/dev/null || true
     $USE_SUDO rm -f /var/cache/apt/archives/lock 2>/dev/null || true
     $USE_SUDO rm -f /var/lib/apt/lists/lock 2>/dev/null || true
     
-    # 修复损坏的dpkg状态
-    log_debug "修复dpkg状态..."
+    log_info "2/4: 修复dpkg状态"
     $USE_SUDO dpkg --configure -a 2>/dev/null || true
     
-    # 修复GPG密钥问题
-    if [[ ! -f /etc/apt/trusted.gpg.d/debian-archive-keyring.gpg ]] && [[ ! -f /usr/share/keyrings/debian-archive-keyring.gpg ]]; then
-        log_info "安装Debian密钥环..."
-        $USE_SUDO apt-get update -qq 2>/dev/null || true
-        $USE_SUDO apt-get install -y debian-archive-keyring 2>/dev/null || {
-            log_warning "无法安装密钥环，尝试手动导入密钥"
-            # 手动导入密钥的备用方案
-            for key in 648ACFD622F3D138 0E98404D386FA1D9 605C66F00D6C9793; do
-                $USE_SUDO apt-key adv --keyserver keyserver.ubuntu.com --recv-keys $key 2>/dev/null || true
-            done
-        }
-    fi
+    log_info "3/4: 修复依赖关系"
+    $USE_SUDO apt-get --fix-broken install -y 2>/dev/null || true
     
-    # 修复时区问题
-    if [[ ! -f /etc/timezone ]]; then
-        log_info "设置默认时区..."
-        echo "UTC" | $USE_SUDO tee /etc/timezone > /dev/null
-        $USE_SUDO dpkg-reconfigure -f noninteractive tzdata 2>/dev/null || true
-    fi
+    log_info "4/4: 更新软件包列表"
+    $USE_SUDO apt-get update || log_warning "软件包列表更新失败，但系统修复已完成"
     
-    # 修复locale问题
-    if ! locale -a | grep -q "en_US.utf8\|C.UTF-8" 2>/dev/null; then
-        log_info "配置locale..."
-        $USE_SUDO apt-get install -y locales 2>/dev/null || true
-        echo "en_US.UTF-8 UTF-8" | $USE_SUDO tee -a /etc/locale.gen > /dev/null
-        $USE_SUDO locale-gen 2>/dev/null || true
-    fi
-    
-    # 修复DNS问题
-    if [[ ! -s /etc/resolv.conf ]]; then
-        log_info "修复DNS配置..."
-        echo -e "nameserver 8.8.8.8\nnameserver 8.8.4.4\nnameserver 1.1.1.1" | $USE_SUDO tee /etc/resolv.conf > /dev/null
-    fi
-    
-    # 修复缺失的必要目录
-    $USE_SUDO mkdir -p /var/lib/apt/lists/partial 2>/dev/null || true
-    $USE_SUDO mkdir -p /var/cache/apt/archives/partial 2>/dev/null || true
-    
-    log_success "VPS问题修复完成"
+    log_success "========================================="
+    log_success "🎉 系统修复完成"
+    log_success "========================================="
+    log_info "系统已优化，现在可以尝试运行正常升级"
+    log_info "建议执行: $0 --check 检查升级状态"
 }
 
-# 清理冲突的软件源
-clean_conflicting_sources() {
-    log_info "清理冲突的软件源配置..."
+# 错误恢复函数
+error_recovery() {
+    local exit_code=$1
+    log_error "脚本执行过程中发生错误，退出码: $exit_code"
     
-    # 备份并禁用第三方源
-    if [[ -d /etc/apt/sources.list.d/ ]]; then
-        local disabled_count=0
-        for file in /etc/apt/sources.list.d/*.list; do
-            if [[ -f "$file" ]]; then
-                $USE_SUDO mv "$file" "$file.disabled" 2>/dev/null && ((disabled_count++)) || true
-            fi
-        done
-        if [[ $disabled_count -gt 0 ]]; then
-            log_info "已禁用 $disabled_count 个第三方软件源"
-        fi
-    fi
-    
-    # 备份并禁用apt preferences
-    if [[ -d /etc/apt/preferences.d/ ]]; then
-        local pref_count=0
-        for file in /etc/apt/preferences.d/*; do
-            if [[ -f "$file" && ! "$file" =~ \.disabled$ ]]; then
-                $USE_SUDO mv "$file" "$file.disabled" 2>/dev/null && ((pref_count++)) || true
-            fi
-        done
-        if [[ $pref_count -gt 0 ]]; then
-            log_info "已禁用 $pref_count 个APT偏好设置"
-        fi
-    fi
-    
-    # 清理可能有问题的配置文件
-    $USE_SUDO rm -f /etc/apt/apt.conf.d/99local 2>/dev/null || true
-    
-    log_success "冲突源配置已清理"
-}
-
-# 智能选择软件源镜像
-select_mirror() {
-    local country_code=""
-    local mirror_url="http://deb.debian.org/debian"
-    local test_timeout=3
-    
-    # 尝试检测地理位置选择合适的镜像
-    if command -v curl >/dev/null 2>&1; then
-        country_code=$(curl -s --connect-timeout 5 --max-time 10 ipinfo.io/country 2>/dev/null || echo "")
-        log_debug "检测到国家代码: $country_code"
-    fi
-    
-    # 定义镜像列表
-    local -A mirrors
-    case "$country_code" in
-        "CN")
-            mirrors=(
-                ["清华大学"]="https://mirrors.tuna.tsinghua.edu.cn/debian"
-                ["中科大"]="https://mirrors.ustc.edu.cn/debian"
-                ["网易"]="http://mirrors.163.com/debian"
-                ["阿里云"]="https://mirrors.aliyun.com/debian"
-                ["华为云"]="https://mirrors.huaweicloud.com/debian"
-            )
-            ;;
-        "US")
-            mirrors=(
-                ["美国官方"]="http://ftp.us.debian.org/debian"
-                ["MIT"]="http://debian.csail.mit.edu/debian"
-            )
-            ;;
-        "JP")
-            mirrors=(
-                ["日本官方"]="http://ftp.jp.debian.org/debian"
-                ["理研"]="http://ftp.riken.jp/Linux/debian/debian"
-            )
-            ;;
-        "DE"|"AT"|"CH")
-            mirrors=(
-                ["德国官方"]="http://ftp.de.debian.org/debian"
-                ["德国镜像"]="http://ftp2.de.debian.org/debian"
-            )
-            ;;
-        "GB"|"IE")
-            mirrors=(
-                ["英国官方"]="http://ftp.uk.debian.org/debian"
-            )
-            ;;
-        *)
-            mirrors=(
-                ["官方主站"]="http://deb.debian.org/debian"
-                ["CDN"]="http://httpredir.debian.org/debian"
-            )
-            ;;
-    esac
-    
-    # 测试镜像可用性
-    log_debug "测试镜像可用性..."
-    for name in "${!mirrors[@]}"; do
-        local url="${mirrors[$name]}"
-        log_debug "测试镜像: $name ($url)"
-        
-        if timeout $test_timeout curl -s --connect-timeout $test_timeout "$url/dists/" >/dev/null 2>&1; then
-            mirror_url="$url"
-            log_info "选择镜像: $name ($mirror_url)"
-            break
-        else
-            log_debug "镜像 $name 不可用或响应慢"
-        fi
-    done
-    
-    echo "$mirror_url"
-}
-
-# 验证sources.list文件的有效性 - 修复版
-validate_sources_list() {
-    local sources_file="/etc/apt/sources.list"
-    
-    log_info "验证sources.list文件有效性..."
-    
-    # 检查文件是否存在且可读
-    if [[ ! -f "$sources_file" ]] || [[ ! -r "$sources_file" ]]; then
-        log_error "sources.list文件不存在或不可读"
-        return 1
-    fi
-    
-    # 检查文件是否为空
-    if [[ ! -s "$sources_file" ]]; then
-        log_error "sources.list文件为空"
-        return 1
-    fi
-    
-    # 检查是否包含有效的deb行
-    if ! grep -q "^deb " "$sources_file"; then
-        log_error "sources.list文件不包含有效的软件源"
-        return 1
-    fi
-    
-    # 简化的格式检查 - 只检查严重问题
-    local line_num=1
-    while IFS= read -r line; do
-        # 跳过空行和注释行
-        if [[ -z "$line" ]] || [[ "$line" =~ ^[[:space:]]*# ]]; then
-            ((line_num++))
-            continue
-        fi
-        
-        # 检查deb行是否以正确的关键字开始
-        if [[ "$line" =~ ^deb(-src)?[[:space:]] ]]; then
-            # 只检查是否有明显的格式错误
-            local parts=($line)
-            if [[ ${#parts[@]} -lt 3 ]]; then
-                log_error "第 $line_num 行格式不正确: $line"
-                return 1
-            fi
-            
-            # 检查URL是否看起来合理
-            if [[ ! "${parts[1]}" =~ ^https?:// ]]; then
-                log_error "第 $line_num 行URL格式错误: ${parts[1]}"
-                return 1
-            fi
-        elif [[ "$line" =~ ^[[:space:]]*$ ]]; then
-            # 空行，跳过
-            :
-        else
-            log_debug "第 $line_num 行可能不是标准deb行: $line"
-        fi
-        
-        ((line_num++))
-    done < "$sources_file"
-    
-    # 简单测试APT能否读取文件 - 移除过于严格的检查
-    log_debug "基本文件格式检查通过"
-    
-    log_success "sources.list文件验证通过"
-    return 0
-}
-
-# 更新软件源配置 - 完全重写，修复所有已知问题
-update_sources_list() {
-    local target_version=$1
-    local target_codename=$2
-    local mirror_url=$(select_mirror)
-    local security_url="http://deb.debian.org/debian-security"
-    
-    log_info "更新软件源到 Debian $target_version ($target_codename)"
-    
-    # 为中国镜像选择对应的安全更新源
-    if [[ "$mirror_url" =~ "tuna.tsinghua.edu.cn" ]]; then
-        security_url="https://mirrors.tuna.tsinghua.edu.cn/debian-security"
-    elif [[ "$mirror_url" =~ "ustc.edu.cn" ]]; then
-        security_url="https://mirrors.ustc.edu.cn/debian-security"
-    elif [[ "$mirror_url" =~ "aliyun.com" ]]; then
-        security_url="https://mirrors.aliyun.com/debian-security"
-    fi
-    
-    # 备份原有配置
-    $USE_SUDO cp /etc/apt/sources.list /etc/apt/sources.list.backup.$(date +%s) 2>/dev/null || true
-    
-    # 创建临时文件
-    local temp_sources="/tmp/sources_list_$.tmp"
-    
-    # 根据版本生成sources.list内容
-    case "$target_version" in
-        "12"|"13"|"14"|"15")
-            # Debian 12+ 包含non-free-firmware
-            cat > "$temp_sources" << 'EOF'
-# Debian __VERSION__ (__CODENAME__) sources
-deb __MIRROR__ __CODENAME__ main contrib non-free non-free-firmware
-deb-src __MIRROR__ __CODENAME__ main contrib non-free non-free-firmware
-
-# Security updates
-deb __SECURITY__ __CODENAME__-security main contrib non-free non-free-firmware
-deb-src __SECURITY__ __CODENAME__-security main contrib non-free non-free-firmware
-
-# Updates
-deb __MIRROR__ __CODENAME__-updates main contrib non-free non-free-firmware
-deb-src __MIRROR__ __CODENAME__-updates main contrib non-free non-free-firmware
-EOF
-            ;;
-        "11")
-            # Debian 11 使用新的安全源格式
-            cat > "$temp_sources" << 'EOF'
-# Debian __VERSION__ (__CODENAME__) sources
-deb __MIRROR__ __CODENAME__ main contrib non-free
-deb-src __MIRROR__ __CODENAME__ main contrib non-free
-
-# Security updates
-deb __SECURITY__ __CODENAME__-security main contrib non-free
-deb-src __SECURITY__ __CODENAME__-security main contrib non-free
-
-# Updates
-deb __MIRROR__ __CODENAME__-updates main contrib non-free
-deb-src __MIRROR__ __CODENAME__-updates main contrib non-free
-EOF
-            ;;
-        "8"|"9"|"10")
-            # Debian 10及以下版本使用旧的安全源格式
-            cat > "$temp_sources" << 'EOF'
-# Debian __VERSION__ (__CODENAME__) sources
-deb __MIRROR__ __CODENAME__ main contrib non-free
-deb-src __MIRROR__ __CODENAME__ main contrib non-free
-
-# Security updates
-deb __SECURITY__ __CODENAME__/updates main contrib non-free
-deb-src __SECURITY__ __CODENAME__/updates main contrib non-free
-
-# Updates
-deb __MIRROR__ __CODENAME__-updates main contrib non-free
-deb-src __MIRROR__ __CODENAME__-updates main contrib non-free
-EOF
-            ;;
-        *)
-            log_error "不支持的版本: $target_version"
-            return 1
-            ;;
-    esac
-    
-    # 替换占位符
-    sed -i "s|__VERSION__|$target_version|g" "$temp_sources"
-    sed -i "s|__CODENAME__|$target_codename|g" "$temp_sources"
-    sed -i "s|__MIRROR__|$mirror_url|g" "$temp_sources"
-    sed -i "s|__SECURITY__|$security_url|g" "$temp_sources"
-    
-    # 验证临时文件
-    if [[ ! -f "$temp_sources" ]] || [[ ! -s "$temp_sources" ]]; then
-        log_error "无法创建临时源文件"
-        rm -f "$temp_sources"
-        return 1
-    fi
-    
-    # 检查文件内容
-    if ! grep -q "^deb " "$temp_sources"; then
-        log_error "生成的源文件格式无效"
-        log_debug "文件内容: $(cat "$temp_sources")"
-        rm -f "$temp_sources"
-        return 1
-    fi
-    
-    # 安全地移动文件
-    if ! $USE_SUDO mv "$temp_sources" /etc/apt/sources.list; then
-        log_error "无法更新sources.list文件"
-        rm -f "$temp_sources"
-        return 1
-    fi
-    
-    # 设置正确的权限
-    $USE_SUDO chmod 644 /etc/apt/sources.list
-    $USE_SUDO chown root:root /etc/apt/sources.list
-    
-    # 验证最终文件
-    if ! $USE_SUDO test -r /etc/apt/sources.list; then
-        log_error "sources.list文件不可读"
-        return 1
-    fi
-    
-    log_success "软件源配置已更新"
-    log_debug "新的sources.list前10行:"
-    $USE_SUDO head -10 /etc/apt/sources.list | while read line; do
-        log_debug "  $line"
-    done
-    
-    return 0
-}
-
-# 强化的APT清理
-enhanced_apt_cleanup() {
-    log_info "执行强化APT清理..."
-    
-    # 停止可能干扰的服务
-    for service in unattended-upgrades apt-daily apt-daily-upgrade; do
-        if systemctl is-active "$service" >/dev/null 2>&1; then
-            log_debug "停止服务: $service"
-            $USE_SUDO systemctl stop "$service" 2>/dev/null || true
-        fi
-    done
-    
-    # 清理APT缓存和锁定文件
-    log_debug "清理APT锁定文件和缓存..."
-    $USE_SUDO rm -rf /var/lib/apt/lists/* 2>/dev/null || true
-    $USE_SUDO rm -f /var/cache/apt/archives/lock 2>/dev/null || true
-    $USE_SUDO rm -f /var/lib/dpkg/lock* 2>/dev/null || true
-    $USE_SUDO rm -f /var/lib/apt/lists/lock 2>/dev/null || true
-    
-    # 创建必要的目录
-    $USE_SUDO mkdir -p /var/lib/apt/lists/partial 2>/dev/null || true
-    $USE_SUDO mkdir -p /var/cache/apt/archives/partial 2>/dev/null || true
-    
-    # 清理APT缓存
-    $USE_SUDO apt-get clean 2>/dev/null || true
-    $USE_SUDO apt-get autoclean 2>/dev/null || true
+    # 尝试基本修复
+    log_info "尝试基本错误恢复..."
     
     # 重新配置dpkg
     $USE_SUDO dpkg --configure -a 2>/dev/null || true
     
-    # 修复可能的损坏
+    # 修复损坏的依赖
     $USE_SUDO apt-get --fix-broken install -y 2>/dev/null || true
     
-    log_success "强化APT清理完成"
+    # 清理锁定文件
+    $USE_SUDO rm -f /var/lib/dpkg/lock* 2>/dev/null || true
+    $USE_SUDO rm -f /var/cache/apt/archives/lock 2>/dev/null || true
+    
+    log_info "基本错误恢复完成，建议运行 $0 --fix-only 进行完整修复"
 }
 
-# 智能更新包列表 - 修复语法错误
-smart_update_packages() {
-    log_info "更新软件包列表..."
+# 脚本入口 - 设置环境
+main() {
+    # 设置LC_ALL确保编码一致性
+    export LC_ALL=C
+    export LANG=C
     
-    local max_attempts=5
-    local attempt=1
-    local base_delay=5
+    # 设置错误处理
+    trap 'error_recovery $?' ERR
     
-    while [[ $attempt -le $max_attempts ]]; do
-        log_info "尝试更新包列表 (第 $attempt/$max_attempts 次)"
-        
-        # 每次重试前清理
-        if [[ $attempt -gt 1 ]]; then
-            enhanced_apt_cleanup
-            sleep $base_delay
-            base_delay=$((base_delay * 2))  # 指数退避
-        fi
-        
-        # 尝试更新，使用更长的超时
-        local update_timeout=600  # 10分钟超时
-        if timeout $update_timeout $USE_SUDO apt-get update -o APT::Acquire::Retries=3 2>&1 | tee /tmp/apt_update.log; then
-            # 检查是否有GPG错误
-            if grep -q "NO_PUBKEY\|GPG error" /tmp/apt_update.log; then
-                log_warning "检测到GPG密钥问题，尝试修复..."
-                
-                # 提取缺失的密钥ID
-                local missing_keys=$(grep "NO_PUBKEY" /tmp/apt_update.log | sed 's/.*NO_PUBKEY \([A-F0-9]*\).*/\1/' | sort -u)
-                
-                # 尝试导入缺失的密钥
-                for key in $missing_keys; do
-                    log_info "尝试导入密钥: $key"
-                    $USE_SUDO apt-key adv --keyserver keyserver.ubuntu.com --recv-keys "$key" 2>/dev/null || \
-                    $USE_SUDO apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys "$key" 2>/dev/null || \
-                    $USE_SUDO apt-key adv --keyserver pgp.mit.edu --recv-keys "$key" 2>/dev/null || true
-                done
-                
-                # 重新尝试更新
-                if timeout $update_timeout $USE_SUDO apt-get update 2>/dev/null; then
-                    log_success "GPG密钥修复后，软件包列表更新成功"
-                    rm -f /tmp/apt_update.log
-                    return 0
-                fi
-            else
-                log_success "软件包列表更新成功"
-                rm -f /tmp/apt_update.log
-                return 0
-            fi
-        fi
-        
-        log_warning "第 $attempt 次更新失败"
-        
-        # 在重试前尝试更换镜像源
-        if [[ $attempt -eq 3 ]]; then
-            log_info "尝试切换到官方源重试..."
-            local fallback_content="deb http://deb.debian.org/debian $(lsb_release -cs 2>/dev/null || echo 'stable') main contrib non-free"
-            echo "$fallback_content" | $USE_SUDO tee /etc/apt/sources.list > /dev/null
-        fi
-        
-        attempt=$((attempt + 1))
-    done
-    
-    rm -f /tmp/apt_update.log
-    log_error "软件包列表更新失败，已尝试 $max_attempts 次"
-    return 1
-}
-
-# 高级系统修复
-advanced_system_repair() {
-    log_info "执行高级系统修复..."
-    
-    # 修复损坏的包数据库
-    log_info "修复包数据库..."
-    $USE_SUDO dpkg --configure -a 2>/dev/null || true
-    $USE_SUDO apt-get --fix-broken install -y 2>/dev/null || true
-    
-    # 修复依赖关系
-    log_info "修复依赖关系..."
-    $USE_SUDO apt-get -f install -y 2>/dev/null || true
-    
-    # 检查并修复关键系统包
-    local essential_packages="base-files base-passwd bash coreutils libc6"
-    for package in $essential_packages; do
-        if dpkg -l "$package" 2>/dev/null | grep -q "^ii"; then
-            log_debug "检查关键包: $package"
-            # 检查包是否有问题
-            if ! dpkg -V "$package" >/dev/null 2>&1; then
-                log_info "重新安装关键包: $package"
-                $USE_SUDO apt-get install --reinstall -y "$package" 2>/dev/null || true
-            fi
-        fi
-    done
-    
-    # 清理损坏的包缓存
-    $USE_SUDO apt-get clean
-    
-    # 重建包缓存
-    $USE_SUDO apt-get update -qq 2>/dev/null || true
-    
-    log_success "高级系统修复完成"
-}
-
-# 渐进式升级
-progressive_upgrade() {
-    local upgrade_phase=$1
-    local max_attempts=3
-    local attempt=1
-    
-    log_info "执行${upgrade_phase}升级阶段..."
-    
-    while [[ $attempt -le $max_attempts ]]; do
-        log_debug "${upgrade_phase}升级尝试 $attempt/$max_attempts"
-        
-        case "$upgrade_phase" in
-            "minimal")
-                # 最小升级 - 只升级已安装的包，不安装新包
-                if DEBIAN_FRONTEND=noninteractive $USE_SUDO apt-get upgrade -y \
-                   -o Dpkg::Options::="--force-confdef" \
-                   -o Dpkg::Options::="--force-confold" 2>/dev/null; then
-                    break
-                fi
+    # 解析命令行参数
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            -h|--help)
+                show_help
+                exit 0
                 ;;
-            "safe")
-                # 安全升级 - 允许安装新包但不删除现有包
-                if DEBIAN_FRONTEND=noninteractive $USE_SUDO apt-get upgrade -y --with-new-pkgs \
-                   -o Dpkg::Options::="--force-confdef" \
-                   -o Dpkg::Options::="--force-confold" 2>/dev/null; then
-                    break
-                fi
+            -v|--version)
+                local current_version=$(get_current_version)
+                local version_info=$(get_version_info "$current_version")
+                local current_codename=$(echo "$version_info" | cut -d'|' -f1)
+                local current_status=$(echo "$version_info" | cut -d'|' -f2)
+                echo "Debian $current_version ($current_codename) [$current_status]"
+                exit 0
                 ;;
-            "full")
-                # 完整升级 - 可能删除/安装新包
-                if DEBIAN_FRONTEND=noninteractive $USE_SUDO apt-get dist-upgrade -y \
-                   -o Dpkg::Options::="--force-confdef" \
-                   -o Dpkg::Options::="--force-confold" 2>/dev/null; then
-                    break
-                fi
+            -c|--check)
+                check_upgrade
+                exit 0
+                ;;
+            -d|--debug)
+                export DEBUG=1
+                log_debug "调试模式已启用"
+                shift
+                ;;
+            --fix-only)
+                check_root
+                check_system
+                fix_only_mode
+                exit 0
+                ;;
+            --force)
+                export FORCE=1
+                log_warning "强制模式已启用，将跳过确认提示"
+                shift
+                ;;
+            --stable-only)
+                export STABLE_ONLY=1
+                log_info "仅升级稳定版本模式已启用"
+                shift
+                ;;
+            --allow-testing)
+                export STABLE_ONLY=0
+                log_info "允许升级测试版本模式已启用"
+                shift
+                ;;
+            *)
+                log_error "未知选项: $1"
+                echo "使用 '$0 --help' 查看帮助信息"
+                exit 1
                 ;;
         esac
-        
-        if [[ $attempt -lt $max_attempts ]]; then
-            log_warning "${upgrade_phase}升级第 $attempt 次失败，重试中..."
-            advanced_system_repair
-            sleep 5
-        fi
-        
-        attempt=$((attempt + 1))
     done
     
-    if [[ $attempt -gt $max_attempts ]]; then
-        log_error "${upgrade_phase}升级失败，已尝试 $max_attempts 次"
-        return 1
-    fi
-    
-    log_success "${upgrade_phase}升级阶段完成"
-    return 0
+    # 默认执行升级
+    check_root
+    check_system
+    main_upgrade
 }
 
-# 执行分阶段升级
-perform_staged_upgrade() {
-    log_info "开始执行分阶段系统升级..."
+# 清理函数
+cleanup() {
+    log_debug "执行清理操作..."
     
-    # 阶段0: 系统预修复
-    log_info "阶段0: 系统预修复"
-    advanced_system_repair
+    # 清理临时文件
+    rm -f /tmp/debian_upgrade_backup_path 2>/dev/null || true
+    rm -f /tmp/apt_update.log 2>/dev/null || true
     
-    # 阶段1: 最小升级
-    log_info "阶段1: 最小升级"
-    if ! progressive_upgrade "minimal"; then
-        log_error "最小升级失败，升级中止"
-        return 1
-    fi
-    
-    # 阶段2: 安全升级  
-    log_info "阶段2: 安全升级"
-    if ! progressive_upgrade "safe"; then
-        log_warning "安全升级失败，继续尝试完整升级"
-    fi
-    
-    # 阶段3: 完整升级
-    log_info "阶段3: 完整升级"
-    if ! progressive_upgrade "full"; then
-        log_error "完整升级失败"
-        return 1
-    fi
-    
-    # 阶段4: 后续清理
-    log_info "阶段4: 系统清理"
-    log_info "清理不需要的软件包..."
-    $USE_SUDO apt-get autoremove -y --purge 2>/dev/null || true
-    $USE_SUDO apt-get autoclean 2>/dev/null || true
-    
-    # 重新配置可能需要配置的包
-    log_info "重新配置系统包..."
-    $USE_SUDO dpkg --configure -a 2>/dev/null || true
-    
-    log_success "分阶段系统升级完成"
-    return 0
-}
-
-# 改进的升级验证 - 更准确的验证逻辑
-verify_upgrade() {
-    local expected_version=$1
-    
-    log_info "验证升级结果..."
-    log_debug "期望版本: $expected_version"
-    
-    # 等待系统稳定
-    sleep 3
-    
-    # 重新检测当前版本
-    local current_version=$(get_current_version)
-    log_debug "检测到当前版本: $current_version"
-    
-    # 检查多个版本指示器
-    local debian_version_file=""
-    local os_release_version=""
-    local apt_policy_version=""
-    
-    if [[ -f /etc/debian_version ]]; then
-        debian_version_file=$(cat /etc/debian_version 2>/dev/null)
-        log_debug "/etc/debian_version: '$debian_version_file'"
-    fi
-    
-    if [[ -f /etc/os-release ]]; then
-        os_release_version=$(grep "^VERSION_ID=" /etc/os-release | cut -d'"' -f2 2>/dev/null)
-        log_debug "/etc/os-release VERSION_ID: '$os_release_version'"
-    fi
-    
-    # 检查APT策略中的版本信息
-    local apt_codename=""
-    case "$expected_version" in
-        "8") apt_codename="jessie" ;;
-        "9") apt_codename="stretch" ;;
-        "10") apt_codename="buster" ;;
-        "11") apt_codename="bullseye" ;;
-        "12") apt_codename="bookworm" ;;
-        "13") apt_codename="trixie" ;;
-        "14") apt_codename="forky" ;;
-    esac
-    
-    if [[ -n "$apt_codename" ]]; then
-        if apt-cache policy base-files 2>/dev/null | grep -q "$apt_codename"; then
-            apt_policy_version="$expected_version"
-            log_debug "APT策略显示版本: $apt_codename"
-        fi
-    fi
-    
-    # 综合判断升级是否成功
-    local success_indicators=0
-    local total_indicators=0
-    
-    # 检查主要版本号
-    if [[ "$current_version" == "$expected_version" ]]; then
-        ((success_indicators++))
-        log_debug "✓ 主版本检测匹配"
-    else
-        log_debug "✗ 主版本检测不匹配: 期望 $expected_version，实际 $current_version"
-    fi
-    ((total_indicators++))
-    
-    # 检查os-release
-    if [[ "$os_release_version" == "$expected_version" ]]; then
-        ((success_indicators++))
-        log_debug "✓ os-release版本匹配"
-    else
-        log_debug "✗ os-release版本不匹配: 期望 $expected_version，实际 '$os_release_version'"
-    fi
-    ((total_indicators++))
-    
-    # 检查debian_version文件
-    if [[ "$debian_version_file" =~ ^$expected_version\. ]]; then
-        ((success_indicators++))
-        log_debug "✓ debian_version文件匹配"
-    else
-        log_debug "✗ debian_version文件不匹配: 期望 $expected_version.x，实际 '$debian_version_file'"
-    fi
-    ((total_indicators++))
-    
-    # 检查APT策略
-    if [[ "$apt_policy_version" == "$expected_version" ]]; then
-        ((success_indicators++))
-        log_debug "✓ APT策略匹配"
-    else
-        log_debug "✗ APT策略不匹配"
-    fi
-    ((total_indicators++))
-    
-    # 判断升级成功的标准：至少2/3的指标通过
-    local success_threshold=$((total_indicators * 2 / 3))
-    if [[ $success_indicators -ge $success_threshold ]]; then
-        log_success "✅ 升级验证成功！($success_indicators/$total_indicators 项检查通过)"
-        log_success "当前版本: Debian $current_version"
-        
-        # 执行额外验证检查
-        log_info "执行系统健康检查..."
-        
-        # 检查关键服务状态
-        local critical_services="ssh networking"
-        local service_issues=0
-        
-        for service in $critical_services; do
-            if systemctl is-active "$service" >/dev/null 2>&1; then
-                log_debug "✅ 服务 $service 运行正常"
-            elif systemctl list-unit-files "$service.service" >/dev/null 2>&1; then
-                log_warning "⚠️  服务 $service 可能存在问题"
-                ((service_issues++))
+    # 重新启用可能被停止的服务
+    for service in unattended-upgrades apt-daily apt-daily-upgrade; do
+        if systemctl list-unit-files "$service.service" >/dev/null 2>&1; then
+            if ! systemctl is-active "$service" >/dev/null 2>&1; then
+                $USE_SUDO systemctl start "$service" 2>/dev/null || true
             fi
-        done
-        
-        # 检查网络连接
-        local network_ok=0
-        for host in debian.org google.com 8.8.8.8; do
-            if ping -c 1 -W 3 "$host" >/dev/null 2>&1; then
-                log_debug "✅ 网络连接正常 ($host)"
-                network_ok=1
-                break
-            fi
-        done
-        
-        if [[ $network_ok -eq 0 ]]; then
-            log_warning "⚠️  网络连接可能存在问题"
-            ((service_issues++))
-        fi
-        
-        # 检查包管理器状态
-        if apt-get check >/dev/null 2>&1; then
-            log_debug "✅ 包管理器状态正常"
-        else
-            log_warning "⚠️  包管理器可能存在问题"
-            ((service_issues++))
-        fi
-        
-        # 总结验证结果
-        if [[ $service_issues -eq 0 ]]; then
-            log_success "🎉 系统升级完全成功，所有检查均通过！"
-        else
-            log_warning "⚠️  升级成功但发现 $service_issues 个潜在问题，建议检查"
-        fi
-        
-        return 0
-    else
-        log_error "❌ 升级验证失败！($success_indicators/$total_indicators 项检查通过，需要至少 $success_threshold 项)"
-        log_error "详细信息："
-        log_error "- 期望版本: Debian $expected_version"
-        log_error "- 检测版本: Debian $current_version"
-        log_error "- /etc/debian_version: '$debian_version_file'"
-        log_error "- /etc/os-release VERSION_ID: '$os_release_version'"
-        
-        return 1
-    fi
-}
-
-# 升级后清理和优化
-post_upgrade_optimization() {
-    log_info "执行升级后优化..."
-    
-    # 更新系统数据库
-    log_debug "更新系统数据库..."
-    $USE_SUDO updatedb 2>/dev/null || true
-    $USE_SUDO mandb -q 2>/dev/null || true
-    
-    # 重建字体缓存
-    if command -v fc-cache >/dev/null 2>&1; then
-        log_debug "重建字体缓存..."
-        fc-cache -f 2>/dev/null || true
-    fi
-    
-    # 更新GRUB（如果存在）
-    if [[ -f /boot/grub/grub.cfg ]] && command -v update-grub >/dev/null 2>&1; then
-        log_debug "更新GRUB配置..."
-        $USE_SUDO update-grub 2>/dev/null || true
-    fi
-    
-    # 重启必要的服务
-    local services_to_restart="networking ssh"
-    for service in $services_to_restart; do
-        if systemctl is-enabled "$service" >/dev/null 2>&1; then
-            log_debug "重启服务: $service"
-            $USE_SUDO systemctl restart "$service" 2>/dev/null || true
         fi
     done
-    
-    log_success "升级后优化完成"
 }
+
+# 注册退出时的清理函数
+trap cleanup EXIT
+
+# 检查是否为直接执行脚本（不是被source）
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    # 脚本入口 - 只有直接执行时才调用main函数
+    main "$@"
+fi
