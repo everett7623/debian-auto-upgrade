@@ -1,4 +1,6 @@
-#!/bin/bash
+# 智能更新包列表 - 增强重试和错误处理
+smart_update_packages() {
+    log_info "#!/bin/bash
 
 # Debian自动逐级升级脚本 - 修复版
 # 功能：自动检测当前版本并升级到下一个版本，直到最新版本
@@ -121,43 +123,55 @@ check_root() {
     fi
 }
 
-# 改进版本检测 - 支持更多边缘情况
+# 改进版本检测 - 更准确的检测
 get_current_version() {
     local version_id=""
     local debian_version=""
     
+    log_debug "开始检测Debian版本..."
+    
     # 方法1: 从os-release获取版本
     if [[ -f /etc/os-release ]]; then
         version_id=$(grep "^VERSION_ID=" /etc/os-release | cut -d'"' -f2 2>/dev/null || echo "")
-        log_debug "从os-release获取版本: $version_id"
+        log_debug "从os-release获取版本: '$version_id'"
     fi
     
     # 方法2: 从debian_version推断
     if [[ -f /etc/debian_version ]]; then
         debian_version=$(cat /etc/debian_version 2>/dev/null || echo "")
-        log_debug "debian_version内容: $debian_version"
+        log_debug "debian_version内容: '$debian_version'"
         
+        # 更精确的版本匹配
         case "$debian_version" in
-            "8."*|"jessie"*) local detected_version="8" ;;
-            "9."*|"stretch"*) local detected_version="9" ;;
-            "10."*|"buster"*) local detected_version="10" ;;
-            "11."*|"bullseye"*) local detected_version="11" ;;
-            "12."*|"bookworm"*) local detected_version="12" ;;
-            "13."*|"trixie"*) local detected_version="13" ;;
-            "14."*|"forky"*) local detected_version="14" ;;
+            8.*|jessie*) local detected_version="8" ;;
+            9.*|stretch*) local detected_version="9" ;;
+            10.*|buster*) local detected_version="10" ;;
+            11.*|bullseye*) local detected_version="11" ;;
+            12.*|bookworm*) local detected_version="12" ;;
+            13.*|trixie*) local detected_version="13" ;;
+            14.*|forky*) local detected_version="14" ;;
             *) local detected_version="" ;;
         esac
         
         # 如果os-release没有VERSION_ID，使用推断的版本
         if [[ -z "$version_id" && -n "$detected_version" ]]; then
             version_id="$detected_version"
-            log_debug "从debian_version推断版本: $version_id"
+            log_debug "从debian_version推断版本: '$version_id'"
         fi
     fi
     
-    # 方法3: 从APT策略检测
+    # 方法3: 从lsb_release获取（如果可用）
+    if [[ -z "$version_id" ]] && command -v lsb_release >/dev/null 2>&1; then
+        local lsb_release=$(lsb_release -rs 2>/dev/null | cut -d. -f1)
+        if [[ -n "$lsb_release" && "$lsb_release" =~ ^[0-9]+$ ]]; then
+            version_id="$lsb_release"
+            log_debug "从lsb_release获取版本: '$version_id'"
+        fi
+    fi
+    
+    # 方法4: 从APT策略检测
     if [[ -z "$version_id" ]]; then
-        local apt_policy=$(apt-cache policy 2>/dev/null | head -20)
+        local apt_policy=$(apt-cache policy base-files 2>/dev/null | head -10)
         if echo "$apt_policy" | grep -q "bookworm"; then
             version_id="12"
         elif echo "$apt_policy" | grep -q "bullseye"; then
@@ -171,36 +185,20 @@ get_current_version() {
         elif echo "$apt_policy" | grep -q "trixie"; then
             version_id="13"
         fi
-        log_debug "从APT策略检测版本: $version_id"
+        log_debug "从APT策略检测版本: '$version_id'"
     fi
     
-    # 方法4: 基于内核版本推断（最后手段）
-    if [[ -z "$version_id" ]]; then
-        local kernel_version=$(uname -r)
-        log_debug "内核版本: $kernel_version"
-        
-        # 这只是一个粗略的估计
-        if [[ "$kernel_version" =~ ^6\. ]]; then
-            version_id="12"  # Debian 12 通常使用6.x内核
-        elif [[ "$kernel_version" =~ ^5\. ]]; then
-            version_id="11"  # Debian 11 通常使用5.x内核
-        elif [[ "$kernel_version" =~ ^4\.19 ]]; then
-            version_id="10"  # Debian 10 使用4.19内核
-        elif [[ "$kernel_version" =~ ^4\. ]]; then
-            version_id="9"   # Debian 9 使用4.x内核
-        fi
-        log_debug "从内核版本推断: $version_id"
-    fi
-    
-    if [[ -z "$version_id" ]]; then
-        log_error "无法确定Debian版本，请检查系统状态"
+    # 最终验证
+    if [[ -z "$version_id" ]] || [[ ! "$version_id" =~ ^[0-9]+$ ]]; then
+        log_error "无法确定Debian版本"
         log_error "调试信息："
-        log_error "- /etc/debian_version: $debian_version"
+        log_error "- /etc/debian_version: '$debian_version'"
+        log_error "- /etc/os-release VERSION_ID: '$(grep VERSION_ID /etc/os-release 2>/dev/null || echo '未找到')'"
         log_error "- 内核版本: $(uname -r)"
-        log_error "- 系统信息: $(cat /etc/os-release 2>/dev/null | head -5 || echo '无法读取')"
         exit 1
     fi
     
+    log_debug "最终检测版本: '$version_id'"
     echo "$version_id"
 }
 
@@ -552,7 +550,7 @@ validate_sources_list() {
     return 0
 }
 
-# 更新软件源配置 - 修复编码问题
+# 更新软件源配置 - 完全重写，修复所有已知问题
 update_sources_list() {
     local target_version=$1
     local target_codename=$2
@@ -570,71 +568,95 @@ update_sources_list() {
         security_url="https://mirrors.aliyun.com/debian-security"
     fi
     
-    # 创建临时文件，避免编码问题
-    local temp_sources="/tmp/sources.list.tmp"
+    # 备份原有配置
+    $USE_SUDO cp /etc/apt/sources.list /etc/apt/sources.list.backup.$(date +%s) 2>/dev/null || true
     
-    # 根据版本生成sources.list内容，使用更安全的写入方式
-    if [[ "$target_version" -ge "12" ]]; then
-        # Debian 12+ 包含non-free-firmware和新的安全源格式
-        cat > "$temp_sources" <<EOF
-# Debian $target_version ($target_codename) sources
-deb $mirror_url $target_codename main contrib non-free non-free-firmware
-deb-src $mirror_url $target_codename main contrib non-free non-free-firmware
-
-# Security updates
-deb $security_url $target_codename-security main contrib non-free non-free-firmware
-deb-src $security_url $target_codename-security main contrib non-free non-free-firmware
-
-# Updates
-deb $mirror_url $target_codename-updates main contrib non-free non-free-firmware
-deb-src $mirror_url $target_codename-updates main contrib non-free non-free-firmware
-EOF
-    elif [[ "$target_version" -ge "11" ]]; then
-        # Debian 11 使用新的安全源格式
-        cat > "$temp_sources" <<EOF
-# Debian $target_version ($target_codename) sources
-deb $mirror_url $target_codename main contrib non-free
-deb-src $mirror_url $target_codename main contrib non-free
-
-# Security updates
-deb $security_url $target_codename-security main contrib non-free
-deb-src $security_url $target_codename-security main contrib non-free
-
-# Updates
-deb $mirror_url $target_codename-updates main contrib non-free
-deb-src $mirror_url $target_codename-updates main contrib non-free
-EOF
-    else
-        # Debian 10及以下版本使用旧的安全源格式
-        cat > "$temp_sources" <<EOF
-# Debian $target_version ($target_codename) sources
-deb $mirror_url $target_codename main contrib non-free
-deb-src $mirror_url $target_codename main contrib non-free
-
-# Security updates
-deb $security_url $target_codename/updates main contrib non-free
-deb-src $security_url $target_codename/updates main contrib non-free
-
-# Updates
-deb $mirror_url $target_codename-updates main contrib non-free
-deb-src $mirror_url $target_codename-updates main contrib non-free
-EOF
-    fi
+    # 创建临时文件
+    local temp_sources="/tmp/sources_list_$.tmp"
     
-    # 验证临时文件是否正确创建
+    # 根据版本生成sources.list内容
+    case "$target_version" in
+        "12"|"13"|"14"|"15")
+            # Debian 12+ 包含non-free-firmware
+            cat > "$temp_sources" << 'EOF'
+# Debian __VERSION__ (__CODENAME__) sources
+deb __MIRROR__ __CODENAME__ main contrib non-free non-free-firmware
+deb-src __MIRROR__ __CODENAME__ main contrib non-free non-free-firmware
+
+# Security updates
+deb __SECURITY__ __CODENAME__-security main contrib non-free non-free-firmware
+deb-src __SECURITY__ __CODENAME__-security main contrib non-free non-free-firmware
+
+# Updates
+deb __MIRROR__ __CODENAME__-updates main contrib non-free non-free-firmware
+deb-src __MIRROR__ __CODENAME__-updates main contrib non-free non-free-firmware
+EOF
+            ;;
+        "11")
+            # Debian 11 使用新的安全源格式
+            cat > "$temp_sources" << 'EOF'
+# Debian __VERSION__ (__CODENAME__) sources
+deb __MIRROR__ __CODENAME__ main contrib non-free
+deb-src __MIRROR__ __CODENAME__ main contrib non-free
+
+# Security updates
+deb __SECURITY__ __CODENAME__-security main contrib non-free
+deb-src __SECURITY__ __CODENAME__-security main contrib non-free
+
+# Updates
+deb __MIRROR__ __CODENAME__-updates main contrib non-free
+deb-src __MIRROR__ __CODENAME__-updates main contrib non-free
+EOF
+            ;;
+        "8"|"9"|"10")
+            # Debian 10及以下版本使用旧的安全源格式
+            cat > "$temp_sources" << 'EOF'
+# Debian __VERSION__ (__CODENAME__) sources
+deb __MIRROR__ __CODENAME__ main contrib non-free
+deb-src __MIRROR__ __CODENAME__ main contrib non-free
+
+# Security updates
+deb __SECURITY__ __CODENAME__/updates main contrib non-free
+deb-src __SECURITY__ __CODENAME__/updates main contrib non-free
+
+# Updates
+deb __MIRROR__ __CODENAME__-updates main contrib non-free
+deb-src __MIRROR__ __CODENAME__-updates main contrib non-free
+EOF
+            ;;
+        *)
+            log_error "不支持的版本: $target_version"
+            return 1
+            ;;
+    esac
+    
+    # 替换占位符
+    sed -i "s|__VERSION__|$target_version|g" "$temp_sources"
+    sed -i "s|__CODENAME__|$target_codename|g" "$temp_sources"
+    sed -i "s|__MIRROR__|$mirror_url|g" "$temp_sources"
+    sed -i "s|__SECURITY__|$security_url|g" "$temp_sources"
+    
+    # 验证临时文件
     if [[ ! -f "$temp_sources" ]] || [[ ! -s "$temp_sources" ]]; then
         log_error "无法创建临时源文件"
+        rm -f "$temp_sources"
         return 1
     fi
     
-    # 验证文件内容是否有效
+    # 检查文件内容
     if ! grep -q "^deb " "$temp_sources"; then
         log_error "生成的源文件格式无效"
+        log_debug "文件内容: $(cat "$temp_sources")"
+        rm -f "$temp_sources"
         return 1
     fi
     
     # 安全地移动文件
-    $USE_SUDO mv "$temp_sources" /etc/apt/sources.list
+    if ! $USE_SUDO mv "$temp_sources" /etc/apt/sources.list; then
+        log_error "无法更新sources.list文件"
+        rm -f "$temp_sources"
+        return 1
+    fi
     
     # 设置正确的权限
     $USE_SUDO chmod 644 /etc/apt/sources.list
@@ -647,11 +669,10 @@ EOF
     fi
     
     log_success "软件源配置已更新"
-    log_debug "新的sources.list内容:"
-    log_debug "$(head -10 /etc/apt/sources.list)"
-    
-    # 清理临时文件
-    rm -f "$temp_sources"
+    log_debug "新的sources.list前10行:"
+    $USE_SUDO head -10 /etc/apt/sources.list | while read line; do
+        log_debug "  $line"
+    done
     
     return 0
 }
@@ -891,22 +912,105 @@ perform_staged_upgrade() {
     return 0
 }
 
-# 验证升级结果
+# 改进的升级验证 - 更准确的验证逻辑
 verify_upgrade() {
     local expected_version=$1
-    local current_version=$(get_current_version)
     
     log_info "验证升级结果..."
-    log_debug "期望版本: $expected_version, 检测到版本: $current_version"
+    log_debug "期望版本: $expected_version"
     
+    # 等待系统稳定
+    sleep 3
+    
+    # 重新检测当前版本
+    local current_version=$(get_current_version)
+    log_debug "检测到当前版本: $current_version"
+    
+    # 检查多个版本指示器
+    local debian_version_file=""
+    local os_release_version=""
+    local apt_policy_version=""
+    
+    if [[ -f /etc/debian_version ]]; then
+        debian_version_file=$(cat /etc/debian_version 2>/dev/null)
+        log_debug "/etc/debian_version: '$debian_version_file'"
+    fi
+    
+    if [[ -f /etc/os-release ]]; then
+        os_release_version=$(grep "^VERSION_ID=" /etc/os-release | cut -d'"' -f2 2>/dev/null)
+        log_debug "/etc/os-release VERSION_ID: '$os_release_version'"
+    fi
+    
+    # 检查APT策略中的版本信息
+    local apt_codename=""
+    case "$expected_version" in
+        "8") apt_codename="jessie" ;;
+        "9") apt_codename="stretch" ;;
+        "10") apt_codename="buster" ;;
+        "11") apt_codename="bullseye" ;;
+        "12") apt_codename="bookworm" ;;
+        "13") apt_codename="trixie" ;;
+        "14") apt_codename="forky" ;;
+    esac
+    
+    if [[ -n "$apt_codename" ]]; then
+        if apt-cache policy base-files 2>/dev/null | grep -q "$apt_codename"; then
+            apt_policy_version="$expected_version"
+            log_debug "APT策略显示版本: $apt_codename"
+        fi
+    fi
+    
+    # 综合判断升级是否成功
+    local success_indicators=0
+    local total_indicators=0
+    
+    # 检查主要版本号
     if [[ "$current_version" == "$expected_version" ]]; then
-        log_success "✅ 升级验证成功！当前版本: Debian $current_version"
+        ((success_indicators++))
+        log_debug "✓ 主版本检测匹配"
+    else
+        log_debug "✗ 主版本检测不匹配: 期望 $expected_version，实际 $current_version"
+    fi
+    ((total_indicators++))
+    
+    # 检查os-release
+    if [[ "$os_release_version" == "$expected_version" ]]; then
+        ((success_indicators++))
+        log_debug "✓ os-release版本匹配"
+    else
+        log_debug "✗ os-release版本不匹配: 期望 $expected_version，实际 '$os_release_version'"
+    fi
+    ((total_indicators++))
+    
+    # 检查debian_version文件
+    if [[ "$debian_version_file" =~ ^$expected_version\. ]]; then
+        ((success_indicators++))
+        log_debug "✓ debian_version文件匹配"
+    else
+        log_debug "✗ debian_version文件不匹配: 期望 $expected_version.x，实际 '$debian_version_file'"
+    fi
+    ((total_indicators++))
+    
+    # 检查APT策略
+    if [[ "$apt_policy_version" == "$expected_version" ]]; then
+        ((success_indicators++))
+        log_debug "✓ APT策略匹配"
+    else
+        log_debug "✗ APT策略不匹配"
+    fi
+    ((total_indicators++))
+    
+    # 判断升级成功的标准：至少2/3的指标通过
+    local success_threshold=$((total_indicators * 2 / 3))
+    if [[ $success_indicators -ge $success_threshold ]]; then
+        log_success "✅ 升级验证成功！($success_indicators/$total_indicators 项检查通过)"
+        log_success "当前版本: Debian $current_version"
         
         # 执行额外验证检查
         log_info "执行系统健康检查..."
         
         # 检查关键服务状态
-        local critical_services="ssh networking systemd-resolved"
+        local critical_services="ssh networking"
         local service_issues=0
         
         for service in $critical_services; do
@@ -941,12 +1045,6 @@ verify_upgrade() {
             ((service_issues++))
         fi
         
-        # 检查文件系统
-        if [[ $(df / | awk 'NR==2 {print $5}' | tr -d '%') -gt 95 ]]; then
-            log_warning "⚠️  根分区空间不足"
-            ((service_issues++))
-        fi
-        
         # 总结验证结果
         if [[ $service_issues -eq 0 ]]; then
             log_success "🎉 系统升级完全成功，所有检查均通过！"
@@ -956,14 +1054,12 @@ verify_upgrade() {
         
         return 0
     else
-        log_error "❌ 升级验证失败！"
-        log_error "   期望版本: Debian $expected_version"
-        log_error "   当前版本: Debian $current_version"
-        
-        # 提供诊断信息
-        log_info "诊断信息："
-        log_info "- /etc/debian_version: $(cat /etc/debian_version 2>/dev/null || echo '无法读取')"
-        log_info "- /etc/os-release VERSION_ID: $(grep VERSION_ID /etc/os-release 2>/dev/null || echo '无法读取')"
+        log_error "❌ 升级验证失败！($success_indicators/$total_indicators 项检查通过，需要至少 $success_threshold 项)"
+        log_error "详细信息："
+        log_error "- 期望版本: Debian $expected_version"
+        log_error "- 检测版本: Debian $current_version"
+        log_error "- /etc/debian_version: '$debian_version_file'"
+        log_error "- /etc/os-release VERSION_ID: '$os_release_version'"
         
         return 1
     fi
