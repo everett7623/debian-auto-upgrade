@@ -488,7 +488,71 @@ select_mirror() {
     echo "$mirror_url"
 }
 
-# 更新软件源配置
+# 验证sources.list文件的有效性
+validate_sources_list() {
+    local sources_file="/etc/apt/sources.list"
+    
+    log_info "验证sources.list文件有效性..."
+    
+    # 检查文件是否存在且可读
+    if [[ ! -f "$sources_file" ]] || [[ ! -r "$sources_file" ]]; then
+        log_error "sources.list文件不存在或不可读"
+        return 1
+    fi
+    
+    # 检查文件是否为空
+    if [[ ! -s "$sources_file" ]]; then
+        log_error "sources.list文件为空"
+        return 1
+    fi
+    
+    # 检查是否包含有效的deb行
+    if ! grep -q "^deb " "$sources_file"; then
+        log_error "sources.list文件不包含有效的软件源"
+        return 1
+    fi
+    
+    # 检查是否有格式错误
+    local line_num=1
+    while IFS= read -r line; do
+        # 跳过空行和注释行
+        if [[ -z "$line" ]] || [[ "$line" =~ ^[[:space:]]*# ]]; then
+            ((line_num++))
+            continue
+        fi
+        
+        # 检查deb行的基本格式
+        if [[ "$line" =~ ^deb(-src)?[[:space:]] ]]; then
+            # 检查是否有不可见字符或编码问题
+            if [[ "$line" =~ [[:cntrl:]] ]]; then
+                log_error "第 $line_num 行包含控制字符或编码问题: $line"
+                return 1
+            fi
+            
+            # 检查基本格式：deb URL distribution component...
+            local parts=($line)
+            if [[ ${#parts[@]} -lt 3 ]]; then
+                log_error "第 $line_num 行格式不正确: $line"
+                return 1
+            fi
+        else
+            log_warning "第 $line_num 行格式可能有问题: $line"
+        fi
+        
+        ((line_num++))
+    done < "$sources_file"
+    
+    # 测试APT是否能解析文件
+    if ! $USE_SUDO apt-get update -qq --dry-run 2>/dev/null; then
+        log_error "APT无法解析sources.list文件"
+        return 1
+    fi
+    
+    log_success "sources.list文件验证通过"
+    return 0
+}
+
+# 更新软件源配置 - 修复编码问题
 update_sources_list() {
     local target_version=$1
     local target_codename=$2
@@ -506,57 +570,90 @@ update_sources_list() {
         security_url="https://mirrors.aliyun.com/debian-security"
     fi
     
-    # 生成sources.list内容
-    local sources_content=""
+    # 创建临时文件，避免编码问题
+    local temp_sources="/tmp/sources.list.tmp"
     
-    # 根据版本确定安全源格式
+    # 根据版本生成sources.list内容，使用更安全的写入方式
     if [[ "$target_version" -ge "12" ]]; then
         # Debian 12+ 包含non-free-firmware和新的安全源格式
-        sources_content="# Debian $target_version ($target_codename) 官方软件源
+        cat > "$temp_sources" <<EOF
+# Debian $target_version ($target_codename) sources
 deb $mirror_url $target_codename main contrib non-free non-free-firmware
 deb-src $mirror_url $target_codename main contrib non-free non-free-firmware
 
-# 安全更新
+# Security updates
 deb $security_url $target_codename-security main contrib non-free non-free-firmware
 deb-src $security_url $target_codename-security main contrib non-free non-free-firmware
 
-# 常规更新
+# Updates
 deb $mirror_url $target_codename-updates main contrib non-free non-free-firmware
-deb-src $mirror_url $target_codename-updates main contrib non-free non-free-firmware"
+deb-src $mirror_url $target_codename-updates main contrib non-free non-free-firmware
+EOF
     elif [[ "$target_version" -ge "11" ]]; then
         # Debian 11 使用新的安全源格式
-        sources_content="# Debian $target_version ($target_codename) 官方软件源
+        cat > "$temp_sources" <<EOF
+# Debian $target_version ($target_codename) sources
 deb $mirror_url $target_codename main contrib non-free
 deb-src $mirror_url $target_codename main contrib non-free
 
-# 安全更新
+# Security updates
 deb $security_url $target_codename-security main contrib non-free
 deb-src $security_url $target_codename-security main contrib non-free
 
-# 常规更新
+# Updates
 deb $mirror_url $target_codename-updates main contrib non-free
-deb-src $mirror_url $target_codename-updates main contrib non-free"
+deb-src $mirror_url $target_codename-updates main contrib non-free
+EOF
     else
         # Debian 10及以下版本使用旧的安全源格式
-        sources_content="# Debian $target_version ($target_codename) 官方软件源
+        cat > "$temp_sources" <<EOF
+# Debian $target_version ($target_codename) sources
 deb $mirror_url $target_codename main contrib non-free
 deb-src $mirror_url $target_codename main contrib non-free
 
-# 安全更新
+# Security updates
 deb $security_url $target_codename/updates main contrib non-free
 deb-src $security_url $target_codename/updates main contrib non-free
 
-# 常规更新  
+# Updates
 deb $mirror_url $target_codename-updates main contrib non-free
-deb-src $mirror_url $target_codename-updates main contrib non-free"
+deb-src $mirror_url $target_codename-updates main contrib non-free
+EOF
     fi
     
-    # 写入新的sources.list
-    echo "$sources_content" | $USE_SUDO tee /etc/apt/sources.list > /dev/null
+    # 验证临时文件是否正确创建
+    if [[ ! -f "$temp_sources" ]] || [[ ! -s "$temp_sources" ]]; then
+        log_error "无法创建临时源文件"
+        return 1
+    fi
+    
+    # 验证文件内容是否有效
+    if ! grep -q "^deb " "$temp_sources"; then
+        log_error "生成的源文件格式无效"
+        return 1
+    fi
+    
+    # 安全地移动文件
+    $USE_SUDO mv "$temp_sources" /etc/apt/sources.list
+    
+    # 设置正确的权限
+    $USE_SUDO chmod 644 /etc/apt/sources.list
+    $USE_SUDO chown root:root /etc/apt/sources.list
+    
+    # 验证最终文件
+    if ! $USE_SUDO test -r /etc/apt/sources.list; then
+        log_error "sources.list文件不可读"
+        return 1
+    fi
     
     log_success "软件源配置已更新"
     log_debug "新的sources.list内容:"
-    log_debug "$(cat /etc/apt/sources.list | head -10)"
+    log_debug "$(head -10 /etc/apt/sources.list)"
+    
+    # 清理临时文件
+    rm -f "$temp_sources"
+    
+    return 0
 }
 
 # 强化的APT清理
@@ -1059,7 +1156,32 @@ main_upgrade() {
     
     # 步骤4: 更新软件源
     log_info "步骤4/8: 更新软件源配置"
-    update_sources_list "$next_version" "$next_codename"
+    if ! update_sources_list "$next_version" "$next_codename"; then
+        log_error "软件源配置更新失败"
+        exit 1
+    fi
+    
+    # 验证sources.list文件
+    if ! validate_sources_list; then
+        log_error "sources.list文件验证失败，尝试使用备用配置"
+        
+        # 使用简单的备用配置
+        log_info "生成备用sources.list配置..."
+        $USE_SUDO tee /etc/apt/sources.list > /dev/null <<EOF
+# Debian $next_version ($next_codename) - Emergency fallback
+deb http://deb.debian.org/debian $next_codename main contrib non-free
+deb http://deb.debian.org/debian-security $next_codename-security main contrib non-free
+deb http://deb.debian.org/debian $next_codename-updates main contrib non-free
+EOF
+        
+        # 再次验证
+        if ! validate_sources_list; then
+            log_error "备用配置也失败，升级中止"
+            exit 1
+        fi
+        
+        log_success "备用sources.list配置生效"
+    fi
     
     # 步骤5: APT清理
     log_info "步骤5/8: APT系统清理"
@@ -1384,8 +1506,12 @@ error_recovery() {
     fi
 }
 
-# 主函数
+# 脚本入口 - 设置环境
 main() {
+    # 设置LC_ALL确保编码一致性
+    export LC_ALL=C
+    export LANG=C
+    
     # 设置错误处理
     trap 'error_recovery $?' ERR
     
