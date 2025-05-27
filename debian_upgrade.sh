@@ -1241,5 +1241,233 @@ check_upgrade() {
         fi
     else
         local next_version_info=$(get_version_info "$next_version")
-        local next_codename=$(echo "$next_version_info" | cut -d'|' -f1)
+        
+        if [[ "$next_codename" == "unknown" ]]; then
+            echo "状态: ✅ 已是最新稳定版本"
+        else
+            echo "可升级到: Debian $next_version ($next_codename) [$next_status]"
+            
+            if [[ "$next_status" == "testing" || "$next_status" == "unstable" ]]; then
+                echo "警告: ⚠️  目标版本为非稳定版本"
+                echo "建议: 💡 生产环境请保持当前稳定版本"
+                echo "选项: 🛡️  使用 --stable-only 可避免升级到测试版本"
+            else
+                echo "推荐: ✅ 可安全升级到稳定版本"
+            fi
+        fi
+    fi
+    
+    echo "========================================="
+    
+    # 显示系统状态
+    echo "🔧 系统状态检查:"
+    
+    # 磁盘空间
+    local disk_usage=$(df -h / | awk 'NR==2 {print $5}')
+    local available_space=$(df / | awk 'NR==2 {print $4}')
+    echo "- 磁盘使用: $disk_usage"
+    if [[ $available_space -lt 2097152 ]]; then
+        echo "  ⚠️  可用空间不足2GB"
+    else
+        echo "  ✅ 磁盘空间充足"
+    fi
+    
+    # 内存状态
+    local memory_info=$(free -h | awk 'NR==2{printf "使用: %s/%s", $3,$2}')
+    echo "- 内存状态: $memory_info"
+    
+    # 网络连接
+    if ping -c 1 deb.debian.org >/dev/null 2>&1; then
+        echo "- 网络连接: ✅ 正常"
+    else
+        echo "- 网络连接: ⚠️  无法连接到Debian官方源"
+    fi
+    
+    # VPS环境检测
+    if detect_vps_environment >/dev/null 2>&1; then
+        echo "- 环境类型: 🖥️  VPS/虚拟机"
+    else
+        echo "- 环境类型: 💻 物理机或未知"
+    fi
+    
+    # 系统负载
+    local load_avg=$(uptime | awk -F'load average:' '{print $2}' | awk '{print $1}' | tr -d ',')
+    echo "- 系统负载: $load_avg"
+    
+    # 检查是否有损坏的包
+    local broken_packages=$(dpkg --get-selections | grep -c "deinstall" 2>/dev/null || echo "0")
+    if [[ $broken_packages -gt 0 ]]; then
+        echo "- 软件包状态: ⚠️  发现 $broken_packages 个问题包"
+    else
+        echo "- 软件包状态: ✅ 正常"
+    fi
+    
+    echo "========================================="
+    
+    # 升级建议
+    echo "📝 升级建议:"
+    if [[ -n "$next_version" && "$next_codename" != "unknown" ]]; then
+        local next_version_info=$(get_version_info "$next_version")
         local next_status=$(echo "$next_version_info" | cut -d'|' -f2)
+        
+        if [[ "$next_status" == "stable" ]]; then
+            echo "✅ 推荐升级到 Debian $next_version - 稳定版本"
+            echo "🚀 执行命令: $0"
+        elif [[ "$next_status" == "testing" ]]; then
+            echo "⚠️  可升级到 Debian $next_version - 测试版本"
+            echo "🧪 测试环境: $0 --allow-testing"
+            echo "🛡️  保持稳定: $0 --stable-only (推荐)"
+        else
+            echo "❌ 不建议升级到 Debian $next_version - 不稳定版本"
+        fi
+    else
+        echo "✅ 当前版本已是最佳选择，无需升级"
+    fi
+    
+    echo "========================================="
+}
+
+# 系统修复模式
+fix_only_mode() {
+    log_info "========================================="
+    log_info "🔧 仅执行系统修复模式"
+    log_info "========================================="
+    
+    # 修复前检查
+    log_info "修复前系统检查..."
+    check_system
+    
+    # 执行各种修复
+    log_info "1/5: VPS环境问题修复"
+    fix_vps_issues
+    
+    log_info "2/5: APT系统清理"
+    enhanced_apt_cleanup
+    
+    log_info "3/5: 软件包列表更新"
+    smart_update_packages || log_warning "软件包列表更新失败，但继续修复"
+    
+    log_info "4/5: 高级系统修复"
+    advanced_system_repair
+    
+    log_info "5/5: 系统优化"
+    post_upgrade_optimization
+    
+    log_success "========================================="
+    log_success "🎉 系统修复完成"
+    log_success "========================================="
+    log_info "系统已优化，现在可以尝试运行正常升级"
+    log_info "建议执行: $0 --check 检查升级状态"
+}
+
+# 错误恢复函数
+error_recovery() {
+    local exit_code=$1
+    log_error "脚本执行过程中发生错误，退出码: $exit_code"
+    
+    # 尝试基本修复
+    log_info "尝试基本错误恢复..."
+    
+    # 重新配置dpkg
+    $USE_SUDO dpkg --configure -a 2>/dev/null || true
+    
+    # 修复损坏的依赖
+    $USE_SUDO apt-get --fix-broken install -y 2>/dev/null || true
+    
+    # 清理锁定文件
+    $USE_SUDO rm -f /var/lib/dpkg/lock* 2>/dev/null || true
+    $USE_SUDO rm -f /var/cache/apt/archives/lock 2>/dev/null || true
+    
+    if [[ -f /tmp/debian_upgrade_backup_path ]]; then
+        log_info "备份文件位置: $(cat /tmp/debian_upgrade_backup_path)"
+        log_info "如需恢复系统，请参考备份目录中的文件"
+    fi
+}
+
+# 主函数
+main() {
+    # 设置错误处理
+    trap 'error_recovery $?' ERR
+    
+    # 解析命令行参数
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            -h|--help)
+                show_help
+                exit 0
+                ;;
+            -v|--version)
+                local current_version=$(get_current_version)
+                local version_info=$(get_version_info "$current_version")
+                local current_codename=$(echo "$version_info" | cut -d'|' -f1)
+                local current_status=$(echo "$version_info" | cut -d'|' -f2)
+                echo "Debian $current_version ($current_codename) [$current_status]"
+                exit 0
+                ;;
+            -c|--check)
+                check_upgrade
+                exit 0
+                ;;
+            -d|--debug)
+                export DEBUG=1
+                log_debug "调试模式已启用"
+                shift
+                ;;
+            --fix-only)
+                check_root
+                check_system
+                fix_only_mode
+                exit 0
+                ;;
+            --force)
+                export FORCE=1
+                log_warning "强制模式已启用，将跳过确认提示"
+                shift
+                ;;
+            --stable-only)
+                export STABLE_ONLY=1
+                log_info "仅升级稳定版本模式已启用"
+                shift
+                ;;
+            --allow-testing)
+                export STABLE_ONLY=0
+                log_info "允许升级测试版本模式已启用"
+                shift
+                ;;
+            *)
+                log_error "未知选项: $1"
+                echo "使用 '$0 --help' 查看帮助信息"
+                exit 1
+                ;;
+        esac
+    done
+    
+    # 默认执行升级
+    check_root
+    check_system
+    main_upgrade
+}
+
+# 清理函数
+cleanup() {
+    log_debug "执行清理操作..."
+    
+    # 清理临时文件
+    rm -f /tmp/debian_upgrade_backup_path 2>/dev/null || true
+    rm -f /tmp/apt_update.log 2>/dev/null || true
+    
+    # 重新启用可能被停止的服务
+    for service in unattended-upgrades apt-daily apt-daily-upgrade; do
+        if systemctl list-unit-files "$service.service" >/dev/null 2>&1; then
+            if ! systemctl is-active "$service" >/dev/null 2>&1; then
+                $USE_SUDO systemctl start "$service" 2>/dev/null || true
+            fi
+        fi
+    done
+}
+
+# 注册退出时的清理函数
+trap cleanup EXIT
+
+# 脚本入口
+main "$@"
