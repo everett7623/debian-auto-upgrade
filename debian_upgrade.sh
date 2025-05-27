@@ -616,7 +616,7 @@ smart_update_packages() {
         
         # 尝试更新，使用更长的超时
         local update_timeout=600  # 10分钟超时
-        if timeout $update_timeout $USE_SUDO apt-get update -o APT::Acquire::Retries=3 2>&1 | tee /tmp/apt_update.log; then
+                    if timeout $update_timeout $USE_SUDO apt-get update -o APT::Acquire::Retries=3 2>&1 | tee /tmp/apt_update.log; then
             # 检查是否有GPG错误
             if grep -q "NO_PUBKEY\|GPG error" /tmp/apt_update.log; then
                 log_warning "检测到GPG密钥问题，尝试修复..."
