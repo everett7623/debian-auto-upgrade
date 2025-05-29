@@ -41,7 +41,337 @@ log_debug() {
     fi
 }
 
-# 用户输入确认函数
+# 检查是否有待继续的升级
+check_pending_upgrade() {
+    local upgrade_state_file="/var/lib/debian_upgrade_state"
+    local backup_state_file="/etc/debian_upgrade_state.backup"
+    local upgrade_log_file="/var/log/debian_upgrade_progress.log"
+    
+    # 优先检查主状态文件，如果不存在则检查备份
+    if [[ ! -f "$upgrade_state_file" && -f "$backup_state_file" ]]; then
+        log_debug "主状态文件不存在，使用备份状态文件"
+        $USE_SUDO cp "$backup_state_file" "$upgrade_state_file" 2>/dev/null || true
+    fi
+    
+    if [[ -f "$upgrade_state_file" ]]; then
+        log_info "检测到待继续的升级状态..."
+        
+        # 读取升级状态信息
+        local previous_version=""
+        local current_version=""
+        local target_version=""
+        local upgrade_time=""
+        local reboot_pending=""
+        
+        if [[ -r "$upgrade_state_file" ]]; then
+            # 使用sudo读取文件内容
+            while IFS='=' read -r key value; do
+                case "$key" in
+                    "PREVIOUS_VERSION") previous_version="$value" ;;
+                    "CURRENT_VERSION") current_version="$value" ;;
+                    "TARGET_VERSION") target_version="$value" ;;
+                    "UPGRADE_TIME") upgrade_time="$value" ;;
+                    "REBOOT_PENDING") reboot_pending="$value" ;;
+                esac
+            done < <($USE_SUDO cat "$upgrade_state_file" 2>/dev/null || cat "$upgrade_state_file" 2>/dev/null)
+        fi
+        
+        # 验证当前版本
+        local actual_current_version=$(get_current_version)
+        
+        echo "========================================="
+        echo "🔄 检测到系统重启后的升级继续状态"
+        echo "========================================="
+        echo
+        echo "📊 升级进度信息："
+        echo "   上次版本: Debian $previous_version"
+        echo "   当前版本: Debian $actual_current_version" 
+        echo "   预期版本: Debian $current_version"
+        echo "   升级时间: $upgrade_time"
+        
+        # 检查升级是否成功
+        if [[ "$actual_current_version" == "$current_version" ]]; then
+            echo "   状态: ✅ 上次升级成功"
+            
+            # 显示升级历史信息
+            check_upgrade_state_history
+            
+            # 检查是否还有下一个版本可升级
+            local next_version=$(get_next_version "$actual_current_version")
+            
+            if [[ -n "$next_version" ]]; then
+                local next_version_info=$(get_version_info "$next_version")
+                local next_codename=$(echo "$next_version_info" | cut -d'|' -f1)
+                local next_status=$(echo "$next_version_info" | cut -d'|' -f2)
+                
+                echo
+                echo "🎯 下一步可升级到："
+                echo "   目标版本: Debian $next_version ($next_codename) [$next_status]"
+                
+                # 风险评估
+                local risk_level="低"
+                if [[ "$next_status" == "testing" ]]; then
+                    risk_level="中等"
+                elif [[ "$next_status" == "unstable" ]]; then
+                    risk_level="高"
+                fi
+                echo "   升级风险: $risk_level"
+                
+                echo
+                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                echo "🤔 您希望继续升级到下一个版本吗？"
+                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                echo
+                echo "选项说明："
+                echo "  [Y] 是的，继续升级到 Debian $next_version"
+                echo "  [N] 不，永久保持当前版本（不再提示）"
+                echo "  [S] 暂时跳过，下次重启后再次询问"
+                echo "  [C] 检查系统状态但不升级"
+                echo "  [Q] 退出脚本"
+                echo
+                
+                # 特殊提示for测试版本
+                if [[ "$next_status" == "testing" || "$next_status" == "unstable" ]]; then
+                    echo "⚠️  警告：下一个版本为非稳定版本！"
+                    echo "   • 不建议在生产环境中使用"
+                    echo "   • 可能包含未修复的bug"
+                    echo "   • 建议先在测试环境验证"
+                    echo
+                fi
+                
+                # 强制模式检查
+                if [[ "${FORCE:-}" == "1" ]]; then
+                    log_info "✅ 强制模式已启用，自动选择继续升级"
+                    cleanup_upgrade_state
+                    return 0
+                fi
+                
+                local user_choice=""
+                while true; do
+                    echo -n "请选择 [Y/N/S/C/Q]: "
+                    read -r user_choice </dev/tty
+                    
+                    case "${user_choice^^}" in
+                        "Y"|"YES")
+                            log_info "✅ 用户选择继续升级到 Debian $next_version"
+                            cleanup_upgrade_state
+                            return 0  # 继续正常升级流程
+                            ;;
+                        "N"|"NO")
+                            log_info "❌ 用户选择永久保持当前版本"
+                            cleanup_upgrade_state
+                            show_upgrade_completion_summary "$previous_version" "$actual_current_version"
+                            exit 0
+                            ;;
+                        "S"|"SKIP")
+                            log_info "⏭️ 用户选择暂时跳过，下次重启后再次询问"
+                            # 不清理状态文件，但更新标记表示用户已经看过提示
+                            mark_upgrade_state_seen
+                            echo
+                            echo "✅ 已保存选择，下次重启后将再次询问是否升级"
+                            echo "💡 如需立即升级，请运行: $0"
+                            echo "💡 如需永久取消，请运行: $0 --check-state 然后选择 N"
+                            exit 0
+                            ;;
+                        "C"|"CHECK")
+                            log_info "🔍 用户选择检查系统状态"
+                            # 保留状态文件，只是检查系统
+                            check_upgrade
+                            exit 0
+                            ;;
+                        "Q"|"QUIT")
+                            log_info "👋 用户选择退出"
+                            # 保留状态文件，用户可能稍后想要升级
+                            echo "感谢使用 Debian 自动升级工具！"
+                            echo "💡 升级状态已保留，重启后会再次询问"
+                            exit 0
+                            ;;
+                        *)
+                            echo "❌ 无效选择，请输入 Y、N、S、C 或 Q"
+                            ;;
+                    esac
+                done
+            else
+                # 已经是最新版本
+                echo
+                echo "🎉 恭喜！您已经升级到最新版本！"
+                cleanup_upgrade_state
+                show_upgrade_completion_summary "$previous_version" "$actual_current_version"
+                exit 0
+            fi
+        else
+            # 升级可能失败了
+            echo "   状态: ⚠️  升级可能未完全成功"
+            echo "   期望: Debian $current_version"
+            echo "   实际: Debian $actual_current_version"
+            echo
+            echo "🔧 建议运行系统检查和修复："
+            echo "   $0 --fix-only"
+            echo
+            
+            if [[ "${FORCE:-}" != "1" ]]; then
+                read -p "是否现在运行系统修复？[y/N]: " -n 1 -r </dev/tty
+                echo
+                if [[ $REPLY =~ ^[Yy]$ ]]; then
+                    cleanup_upgrade_state
+                    fix_only_mode
+                    exit 0
+                else
+                    cleanup_upgrade_state
+                    exit 1
+                fi
+            else
+                log_info "强制模式已启用，自动运行系统修复"
+                cleanup_upgrade_state
+                fix_only_mode
+                exit 0
+            fi
+        fi
+    fi
+    
+    return 1  # 没有待继续的升级
+}
+
+# 保存升级状态
+save_upgrade_state() {
+    local previous_version=$1
+    local current_version=$2
+    local target_version=$3
+    local upgrade_state_file="/var/lib/debian_upgrade_state"
+    local upgrade_log_file="/var/log/debian_upgrade_progress.log"
+    
+    log_info "保存升级状态信息..."
+    
+    # 确保目录存在
+    $USE_SUDO mkdir -p /var/lib 2>/dev/null || true
+    $USE_SUDO mkdir -p /var/log 2>/dev/null || true
+    
+    # 创建状态文件（使用持久化目录）
+    cat << EOF | $USE_SUDO tee "$upgrade_state_file" > /dev/null
+PREVIOUS_VERSION=$previous_version
+CURRENT_VERSION=$current_version  
+TARGET_VERSION=$target_version
+UPGRADE_TIME=$(date '+%Y-%m-%d %H:%M:%S')
+SCRIPT_VERSION=$SCRIPT_VERSION
+REBOOT_PENDING=1
+EOF
+    
+    # 设置文件权限
+    $USE_SUDO chmod 644 "$upgrade_state_file"
+    
+    # 记录到系统日志
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - Debian升级: $previous_version → $current_version (目标: $target_version)" | $USE_SUDO tee -a "$upgrade_log_file" > /dev/null
+    
+    # 创建一个在 /etc 下的备份状态文件
+    $USE_SUDO cp "$upgrade_state_file" "/etc/debian_upgrade_state.backup" 2>/dev/null || true
+    
+    log_debug "升级状态已保存到 $upgrade_state_file"
+    log_debug "备份状态已保存到 /etc/debian_upgrade_state.backup"
+}
+
+# 标记升级状态已被查看（用于暂时跳过）
+mark_upgrade_state_seen() {
+    local upgrade_state_file="/var/lib/debian_upgrade_state"
+    local backup_state_file="/etc/debian_upgrade_state.backup"
+    
+    if [[ -f "$upgrade_state_file" ]]; then
+        # 添加已查看标记和时间戳
+        echo "USER_SEEN=1" | $USE_SUDO tee -a "$upgrade_state_file" > /dev/null
+        echo "LAST_SEEN=$(date '+%Y-%m-%d %H:%M:%S')" | $USE_SUDO tee -a "$upgrade_state_file" > /dev/null
+        echo "SKIP_COUNT=$((${SKIP_COUNT:-0} + 1))" | $USE_SUDO tee -a "$upgrade_state_file" > /dev/null
+        
+        # 同步到备份文件
+        if [[ -f "$backup_state_file" ]]; then
+            $USE_SUDO cp "$upgrade_state_file" "$backup_state_file"
+        fi
+        
+        log_debug "升级状态已标记为已查看"
+    fi
+}
+
+# 检查升级状态的查看历史
+check_upgrade_state_history() {
+    local upgrade_state_file="/var/lib/debian_upgrade_state"
+    local user_seen=""
+    local last_seen=""
+    local skip_count=0
+    
+    if [[ -f "$upgrade_state_file" ]]; then
+        while IFS='=' read -r key value; do
+            case "$key" in
+                "USER_SEEN") user_seen="$value" ;;
+                "LAST_SEEN") last_seen="$value" ;;
+                "SKIP_COUNT") skip_count="$value" ;;
+            esac
+        done < <($USE_SUDO cat "$upgrade_state_file" 2>/dev/null || cat "$upgrade_state_file" 2>/dev/null)
+        
+        if [[ "$user_seen" == "1" && -n "$last_seen" ]]; then
+            echo
+            echo "📋 升级提示历史："
+            echo "   上次查看: $last_seen"
+            echo "   跳过次数: ${skip_count:-0}"
+            
+            # 如果跳过次数过多，给出提醒
+            if [[ ${skip_count:-0} -ge 3 ]]; then
+                echo
+                echo "💡 温馨提示："
+                echo "   您已经跳过升级提示 ${skip_count} 次"
+                echo "   建议考虑升级以获得最新的安全更新和功能改进"
+                echo "   或选择'永久保持'来停止提醒"
+            fi
+        fi
+    fi
+}
+cleanup_upgrade_state() {
+    local upgrade_state_file="/var/lib/debian_upgrade_state"
+    local backup_state_file="/etc/debian_upgrade_state.backup"
+    
+    if [[ -f "$upgrade_state_file" ]]; then
+        $USE_SUDO rm -f "$upgrade_state_file" 2>/dev/null || true
+        log_debug "升级状态文件已清理: $upgrade_state_file"
+    fi
+    
+    if [[ -f "$backup_state_file" ]]; then
+        $USE_SUDO rm -f "$backup_state_file" 2>/dev/null || true
+        log_debug "备份状态文件已清理: $backup_state_file"
+    fi
+}
+
+# 显示升级完成摘要
+show_upgrade_completion_summary() {
+    local from_version=$1
+    local to_version=$2
+    
+    echo
+    echo "========================================="
+    echo "🎉 系统升级完成摘要"
+    echo "========================================="
+    echo
+    echo "📊 升级详情："
+    echo "   起始版本: Debian $from_version"
+    echo "   当前版本: Debian $to_version"
+    echo "   升级方式: 逐级安全升级"
+    echo "   完成时间: $(date '+%Y-%m-%d %H:%M:%S')"
+    echo
+    echo "✅ 成功完成的操作："
+    echo "   • 系统版本升级"
+    echo "   • 软件包更新"
+    echo "   • 配置文件处理"
+    echo "   • 系统服务重启"
+    echo
+    echo "📝 建议后续操作："
+    echo "   • 检查关键服务运行状态"
+    echo "   • 验证网络连接和SSH访问"
+    echo "   • 检查自定义配置是否正常"
+    echo "   • 查看系统日志: /var/log/debian_upgrade_progress.log"
+    echo
+    echo "🔧 如需继续升级到更高版本："
+    echo "   • 重新运行此脚本: $0"
+    echo "   • 或检查可用升级: $0 --check"
+    echo
+    echo "感谢使用 Debian 自动升级工具！"
+    echo "========================================="
+}
 get_user_confirmation() {
     local prompt="$1"
     local response=""
@@ -251,6 +581,7 @@ Debian自动逐级升级脚本 v$SCRIPT_VERSION
   --force             强制执行升级（跳过确认）
   --stable-only       仅升级到稳定版本，跳过测试版本
   --allow-testing     允许升级到测试版本（默认行为）
+  --check-state       检查升级状态（重启后使用）
 
 ✨ 功能特性:
   ✅ 自动检测当前Debian版本和目标版本
@@ -261,6 +592,15 @@ Debian自动逐级升级脚本 v$SCRIPT_VERSION
   ✅ 完整的配置备份和恢复
   ✅ 网络和系统环境检查
   ✅ 详细的日志和错误处理
+  ✅ 重启后升级状态保持和用户选择
+
+🔄 重启后升级选择:
+  当系统升级并重启后，脚本会自动检测升级状态并提供以下选择：
+  • [Y] 继续升级 - 立即升级到下一个版本
+  • [N] 永久保持 - 清除升级状态，不再提示升级
+  • [S] 暂时跳过 - 保留升级状态，下次重启时再次询问
+  • [C] 检查状态 - 查看系统状态但不进行升级
+  • [Q] 退出脚本 - 保留升级状态，稍后可以继续
 
 🔄 支持的升级路径:
   • Debian 8 (Jessie) → 9 (Stretch) → 10 (Buster)
@@ -400,8 +740,13 @@ check_upgrade() {
     echo "========================================="
 }
 
-# 简化的主升级逻辑（基础版本）
+# 主升级逻辑
 main_upgrade() {
+    # 首先检查是否有待继续的升级
+    if check_pending_upgrade; then
+        log_info "继续进行升级流程..."
+    fi
+    
     local current_version=$(get_current_version)
     local version_info=$(get_version_info "$current_version")
     local current_codename=$(echo "$version_info" | cut -d'|' -f1)
@@ -497,6 +842,9 @@ main_upgrade() {
     
     log_info "🚀 开始升级过程..."
     
+    # 保存升级状态（用于重启后检查）
+    save_upgrade_state "$current_version" "$next_version" "$next_version"
+    
     # 简化的升级步骤
     log_info "步骤1: 更新软件源配置"
     
@@ -504,6 +852,232 @@ main_upgrade() {
     $USE_SUDO cp /etc/apt/sources.list /etc/apt/sources.list.backup.$(date +%s) 2>/dev/null || true
     
     # 更新sources.list
+    case "$next_version" in
+        "12"|"13"|"14"|"15")
+            # Debian 12+ 包含non-free-firmware
+            cat << EOF | $USE_SUDO tee /etc/apt/sources.list > /dev/null
+# Debian $next_version ($next_codename) sources
+deb http://deb.debian.org/debian $next_codename main contrib non-free non-free-firmware
+deb-src http://deb.debian.org/debian $next_codename main contrib non-free non-free-firmware
+
+# Security updates
+deb http://deb.debian.org/debian-security $next_codename-security main contrib non-free non-free-firmware
+deb-src http://deb.debian.org/debian-security $next_codename-security main contrib non-free non-free-firmware
+
+# Updates
+deb http://deb.debian.org/debian $next_codename-updates main contrib non-free non-free-firmware
+deb-src http://deb.debian.org/debian $next_codename-updates main contrib non-free non-free-firmware
+EOF
+            ;;
+        "11")
+            # Debian 11 使用新的安全源格式
+            cat << EOF | $USE_SUDO tee /etc/apt/sources.list > /dev/null
+# Debian $next_version ($next_codename) sources
+deb http://deb.debian.org/debian $next_codename main contrib non-free
+deb-src http://deb.debian.org/debian $next_codename main contrib non-free
+
+# Security updates
+deb http://deb.debian.org/debian-security $next_codename-security main contrib non-free
+deb-src http://deb.debian.org/debian-security $next_codename-security main contrib non-free
+
+# Updates
+deb http://deb.debian.org/debian $next_codename-updates main contrib non-free
+deb-src http://deb.debian.org/debian $next_codename-updates main contrib non-free
+EOF
+            ;;
+        *)
+            # Debian 10及以下版本使用旧的安全源格式
+            cat << EOF | $USE_SUDO tee /etc/apt/sources.list > /dev/null
+# Debian $next_version ($next_codename) sources
+deb http://deb.debian.org/debian $next_codename main contrib non-free
+deb-src http://deb.debian.org/debian $next_codename main contrib non-free
+
+# Security updates
+deb http://deb.debian.org/debian-security $next_codename/updates main contrib non-free
+deb-src http://deb.debian.org/debian-security $next_codename/updates main contrib non-free
+
+# Updates
+deb http://deb.debian.org/debian $next_codename-updates main contrib non-free
+deb-src http://deb.debian.org/debian $next_codename-updates main contrib non-free
+EOF
+            ;;
+    esac
+    
+    log_success "软件源配置已更新"
+    
+    log_info "步骤2: 更新软件包列表"
+    
+    # 先尝试更新，如果失败则处理GPG密钥问题
+    local update_success=0
+    local max_attempts=3
+    local attempt=1
+    
+    while [[ $attempt -le $max_attempts && $update_success -eq 0 ]]; do
+        log_info "尝试更新软件包列表 (第 $attempt/$max_attempts 次)"
+        
+        if $USE_SUDO apt-get update 2>&1 | tee /tmp/apt_update.log; then
+            update_success=1
+            log_success "软件包列表更新成功"
+        else
+            # 检查是否是GPG密钥问题
+            if grep -q "NO_PUBKEY\|GPG error" /tmp/apt_update.log; then
+                log_warning "检测到GPG密钥问题，尝试修复..."
+                
+                # 安装必要的密钥工具
+                if ! command -v gpg >/dev/null 2>&1; then
+                    log_info "安装GPG工具..."
+                    $USE_SUDO apt-get install -y --allow-unauthenticated gnupg 2>/dev/null || true
+                fi
+                
+                # 提取缺失的密钥ID
+                local missing_keys=$(grep "NO_PUBKEY" /tmp/apt_update.log | sed 's/.*NO_PUBKEY \([A-F0-9]*\).*/\1/' | sort -u)
+                
+                log_info "尝试导入缺失的GPG密钥..."
+                for key in $missing_keys; do
+                    log_info "导入密钥: $key"
+                    
+                    # 尝试多个密钥服务器
+                    local key_imported=0
+                    for keyserver in keyserver.ubuntu.com hkp://keyserver.ubuntu.com:80 pgp.mit.edu; do
+                        if $USE_SUDO apt-key adv --keyserver "$keyserver" --recv-keys "$key" 2>/dev/null; then
+                            log_success "成功从 $keyserver 导入密钥 $key"
+                            key_imported=1
+                            break
+                        else
+                            log_debug "从 $keyserver 导入密钥 $key 失败"
+                        fi
+                    done
+                    
+                    if [[ $key_imported -eq 0 ]]; then
+                        log_warning "无法导入密钥 $key，尝试手动下载"
+                        
+                        # 尝试直接下载Debian密钥
+                        case "$key" in
+                            "0E98404D386FA1D9"|"6ED0E7B82643E131"|"605C66F00D6C9793")
+                                log_info "尝试安装debian-archive-keyring包"
+                                $USE_SUDO apt-get install -y --allow-unauthenticated debian-archive-keyring 2>/dev/null || true
+                                ;;
+                        esac
+                    fi
+                done
+                
+                # 清理APT缓存后重试
+                $USE_SUDO apt-get clean
+                sleep 2
+                
+            else
+                log_error "软件包列表更新失败，非GPG密钥问题"
+                if [[ $attempt -eq $max_attempts ]]; then
+                    cleanup_upgrade_state
+                    exit 1
+                fi
+            fi
+        fi
+        
+        attempt=$((attempt + 1))
+        
+        # 如果不是最后一次尝试，等待一下
+        if [[ $attempt -le $max_attempts && $update_success -eq 0 ]]; then
+            log_info "等待 5 秒后重试..."
+            sleep 5
+        fi
+    done
+    
+    # 清理临时文件
+    rm -f /tmp/apt_update.log
+    
+    if [[ $update_success -eq 0 ]]; then
+        log_error "更新软件包列表失败，已尝试 $max_attempts 次"
+        log_error "建议手动解决GPG密钥问题后重新运行脚本"
+        cleanup_upgrade_state
+        exit 1
+    fi
+    
+    log_info "步骤3: 执行系统升级"
+    
+    # 分阶段升级
+    log_info "3.1: 最小升级"
+    DEBIAN_FRONTEND=noninteractive $USE_SUDO apt-get upgrade -y \
+        -o Dpkg::Options::="--force-confdef" \
+        -o Dpkg::Options::="--force-confold" || {
+        log_warning "最小升级失败，继续尝试完整升级"
+    }
+    
+    log_info "3.2: 完整升级"
+    DEBIAN_FRONTEND=noninteractive $USE_SUDO apt-get dist-upgrade -y \
+        -o Dpkg::Options::="--force-confdef" \
+        -o Dpkg::Options::="--force-confold" || {
+        log_error "系统升级失败"
+        cleanup_upgrade_state
+        exit 1
+    }
+    
+    log_info "步骤4: 清理系统"
+    $USE_SUDO apt-get autoremove -y --purge 2>/dev/null || true
+    $USE_SUDO apt-get autoclean 2>/dev/null || true
+    
+    # 验证升级结果
+    sleep 3
+    local new_version=$(get_current_version)
+    if [[ "$new_version" == "$next_version" ]]; then
+        echo
+        log_success "========================================="
+        log_success "🎉 升级完成！Debian $current_version → $next_version"
+        log_success "========================================="
+        echo
+        log_info "📝 重要提醒："
+        log_info "1. 🔄 需要重启系统以确保所有更改生效"
+        log_info "2. 🔧 重启后可以再次运行此脚本继续升级到更高版本"
+        log_info "3. 🛡️  如遇问题，可使用备份配置进行恢复"
+        
+        # 检查是否还有更高版本可升级
+        local further_version=$(get_next_version "$next_version")
+        if [[ -n "$further_version" ]]; then
+            local further_info=$(get_version_info "$further_version")
+            local further_codename=$(echo "$further_info" | cut -d'|' -f1)
+            local further_status=$(echo "$further_info" | cut -d'|' -f2)
+            
+            echo
+            log_info "🚀 重启后的升级选项："
+            log_info "- 系统重启后，脚本会询问您是否继续升级"
+            if [[ "$further_status" == "stable" ]]; then
+                log_info "- 下一步可升级到 Debian $further_version ($further_codename) [$further_status]"
+            elif [[ "${STABLE_ONLY:-}" != "1" ]]; then
+                log_info "- 下一步可选升级到 Debian $further_version ($further_codename) [$further_status]"
+                log_warning "  (测试版本，需要明确确认)"
+            fi
+        fi
+        
+        echo
+        echo "📋 升级状态已保存，重启后运行脚本时将提供选择："
+        echo "   • 继续升级到下一个版本"
+        echo "   • 保持当前版本"
+        echo "   • 仅检查系统状态"
+        echo
+        
+        if [[ "${FORCE:-}" == "1" ]]; then
+            log_info "强制模式已启用，建议手动重启系统"
+        else
+            read -p "是否现在重启系统? [y/N]: " -n 1 -r </dev/tty
+            echo
+            if [[ $REPLY =~ ^[Yy]$ ]]; then
+                log_info "🔄 正在重启系统..."
+                log_info "重启后请再次运行此脚本以继续升级流程"
+                sleep 2
+                $USE_SUDO reboot
+            else
+                log_info "请稍后手动重启系统: sudo reboot"
+                log_info "重启后运行: $0"
+            fi
+        fi
+    else
+        log_error "升级验证失败，请检查系统状态"
+        log_error "期望版本: Debian $next_version"
+        log_error "检测版本: Debian $new_version"
+        cleanup_upgrade_state
+        exit 1
+    fi
+}# 更新sources.list
     case "$next_version" in
         "12"|"13"|"14"|"15")
             # Debian 12+ 包含non-free-firmware
@@ -711,7 +1285,10 @@ main() {
                 exit 0
                 ;;
             -c|--check)
-                check_upgrade
+                # 先检查待继续的升级，如果没有再显示常规检查
+                if ! check_pending_upgrade; then
+                    check_upgrade
+                fi
                 exit 0
                 ;;
             -d|--debug)
@@ -720,6 +1297,8 @@ main() {
                 shift
                 ;;
             --fix-only)
+                # 清理可能的升级状态
+                cleanup_upgrade_state
                 check_root
                 check_system
                 fix_only_mode
@@ -740,6 +1319,26 @@ main() {
                 log_info "允许升级测试版本模式已启用"
                 shift
                 ;;
+            --check-state)
+                # 强制检查升级状态
+                if check_pending_upgrade; then
+                    log_info "已处理升级状态检查"
+                else
+                    log_info "没有发现待继续的升级状态"
+                    check_upgrade
+                fi
+                exit 0
+                ;;
+            --continue)
+                # 隐藏选项：强制继续升级流程，跳过重启后的选择
+                export FORCE_CONTINUE=1
+                shift
+                ;;
+            --no-reboot-check)
+                # 隐藏选项：跳过重启后检查
+                export NO_REBOOT_CHECK=1
+                shift
+                ;;
             *)
                 log_error "未知选项: $1"
                 echo "使用 '$0 --help' 查看帮助信息"
@@ -748,9 +1347,19 @@ main() {
         esac
     done
     
-    # 默认执行升级
+    # 检查权限
     check_root
     check_system
+    
+    # 如果没有设置跳过重启检查，则检查待继续的升级
+    if [[ "${NO_REBOOT_CHECK:-}" != "1" && "${FORCE_CONTINUE:-}" != "1" ]]; then
+        if check_pending_upgrade; then
+            # 如果检查到待继续升级并且用户选择继续，则会继续执行
+            log_info "继续升级流程..."
+        fi
+    fi
+    
+    # 执行主升级流程
     main_upgrade
 }
 
@@ -758,8 +1367,10 @@ main() {
 cleanup() {
     log_debug "执行清理操作..."
     
-    # 清理临时文件
-    rm -f /tmp/debian_upgrade_backup_path 2>/dev/null || true
+    # 注意：不要在这里清理升级状态文件，因为重启后需要它
+    # cleanup_upgrade_state  # 注释掉这行
+    
+    # 清理其他临时文件
     rm -f /tmp/apt_update.log 2>/dev/null || true
     
     # 重新启用可能被停止的服务
