@@ -328,7 +328,9 @@ system_health_check() {
     # 检查系统负载
     local load_avg=$(uptime | awk -F'load average:' '{print $2}' | awk '{print $1}' | tr -d ',')
     local cpu_count=$(nproc)
-    if (( $(echo "$load_avg > $cpu_count * 2" | bc -l) )); then
+    # 使用 awk 替代 bc 进行浮点数比较
+    local threshold=$((cpu_count * 2))
+    if awk -v load="$load_avg" -v thresh="$threshold" 'BEGIN { exit (load > thresh) ? 0 : 1 }'; then
         log_warning "系统负载过高: $load_avg (CPU数: $cpu_count)"
         ((issues++))
     else
@@ -1007,10 +1009,20 @@ main_upgrade() {
     # 备份sources.list
     $USE_SUDO cp /etc/apt/sources.list /etc/apt/sources.list.backup.$(date +%s) 2>/dev/null || true
     
-    # 生成新的sources.list
-    generate_sources_list "$next_version" "$next_codename" | $USE_SUDO tee /etc/apt/sources.list > /dev/null
+    # 生成新的sources.list到临时文件
+    local temp_sources="/tmp/sources.list.$"
+    generate_sources_list "$next_version" "$next_codename" > "$temp_sources"
     
-    log_success "软件源配置已更新"
+    # 验证临时文件内容
+    if [[ -s "$temp_sources" ]]; then
+        # 移动到正确位置
+        $USE_SUDO mv "$temp_sources" /etc/apt/sources.list
+        log_success "软件源配置已更新"
+    else
+        log_error "生成软件源配置失败"
+        rm -f "$temp_sources"
+        exit 1
+    fi
     
     log_info "步骤2: 更新软件包列表"
     if ! $USE_SUDO apt-get update; then
