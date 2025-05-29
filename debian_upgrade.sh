@@ -906,8 +906,89 @@ EOF
     log_success "软件源配置已更新"
     
     log_info "步骤2: 更新软件包列表"
-    if ! $USE_SUDO apt-get update; then
-        log_error "更新软件包列表失败"
+    
+    # 先尝试更新，如果失败则处理GPG密钥问题
+    local update_success=0
+    local max_attempts=3
+    local attempt=1
+    
+    while [[ $attempt -le $max_attempts && $update_success -eq 0 ]]; do
+        log_info "尝试更新软件包列表 (第 $attempt/$max_attempts 次)"
+        
+        if $USE_SUDO apt-get update 2>&1 | tee /tmp/apt_update.log; then
+            update_success=1
+            log_success "软件包列表更新成功"
+        else
+            # 检查是否是GPG密钥问题
+            if grep -q "NO_PUBKEY\|GPG error" /tmp/apt_update.log; then
+                log_warning "检测到GPG密钥问题，尝试修复..."
+                
+                # 安装必要的密钥工具
+                if ! command -v gpg >/dev/null 2>&1; then
+                    log_info "安装GPG工具..."
+                    $USE_SUDO apt-get install -y --allow-unauthenticated gnupg 2>/dev/null || true
+                fi
+                
+                # 提取缺失的密钥ID
+                local missing_keys=$(grep "NO_PUBKEY" /tmp/apt_update.log | sed 's/.*NO_PUBKEY \([A-F0-9]*\).*/\1/' | sort -u)
+                
+                log_info "尝试导入缺失的GPG密钥..."
+                for key in $missing_keys; do
+                    log_info "导入密钥: $key"
+                    
+                    # 尝试多个密钥服务器
+                    local key_imported=0
+                    for keyserver in keyserver.ubuntu.com hkp://keyserver.ubuntu.com:80 pgp.mit.edu; do
+                        if $USE_SUDO apt-key adv --keyserver "$keyserver" --recv-keys "$key" 2>/dev/null; then
+                            log_success "成功从 $keyserver 导入密钥 $key"
+                            key_imported=1
+                            break
+                        else
+                            log_debug "从 $keyserver 导入密钥 $key 失败"
+                        fi
+                    done
+                    
+                    if [[ $key_imported -eq 0 ]]; then
+                        log_warning "无法导入密钥 $key，尝试手动下载"
+                        
+                        # 尝试直接下载Debian密钥
+                        case "$key" in
+                            "0E98404D386FA1D9"|"6ED0E7B82643E131"|"605C66F00D6C9793")
+                                log_info "尝试安装debian-archive-keyring包"
+                                $USE_SUDO apt-get install -y --allow-unauthenticated debian-archive-keyring 2>/dev/null || true
+                                ;;
+                        esac
+                    fi
+                done
+                
+                # 清理APT缓存后重试
+                $USE_SUDO apt-get clean
+                sleep 2
+                
+            else
+                log_error "软件包列表更新失败，非GPG密钥问题"
+                if [[ $attempt -eq $max_attempts ]]; then
+                    cleanup_upgrade_state
+                    exit 1
+                fi
+            fi
+        fi
+        
+        attempt=$((attempt + 1))
+        
+        # 如果不是最后一次尝试，等待一下
+        if [[ $attempt -le $max_attempts && $update_success -eq 0 ]]; then
+            log_info "等待 5 秒后重试..."
+            sleep 5
+        fi
+    done
+    
+    # 清理临时文件
+    rm -f /tmp/apt_update.log
+    
+    if [[ $update_success -eq 0 ]]; then
+        log_error "更新软件包列表失败，已尝试 $max_attempts 次"
+        log_error "建议手动解决GPG密钥问题后重新运行脚本"
         cleanup_upgrade_state
         exit 1
     fi
