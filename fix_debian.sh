@@ -12,7 +12,7 @@ if grep -q '^\[INFO\]' /etc/apt/sources.list 2>/dev/null; then
     backup_files=$(ls -t /etc/apt/sources.list.backup.* 2>/dev/null | head -1)
     if [[ -n "$backup_files" ]]; then
         echo "找到备份文件: $backup_files"
-        sudo cp "$backup_files" /etc/apt/sources.list
+        cp "$backup_files" /etc/apt/sources.list
         echo "已恢复备份的 sources.list"
     else
         # 手动创建正确的 sources.list
@@ -32,7 +32,7 @@ if grep -q '^\[INFO\]' /etc/apt/sources.list 2>/dev/null; then
         fi
         
         # 创建新的 sources.list
-        cat << EOF | sudo tee /etc/apt/sources.list > /dev/null
+        cat << EOF |  tee /etc/apt/sources.list > /dev/null
 # Debian sources
 deb http://deb.debian.org/debian $codename main contrib non-free
 deb-src http://deb.debian.org/debian $codename main contrib non-free
@@ -52,23 +52,23 @@ fi
 # 2. 安装缺失的工具
 if ! command -v bc &> /dev/null; then
     echo "安装 bc 命令..."
-    sudo apt-get update
-    sudo apt-get install -y bc
+     apt-get update
+     apt-get install -y bc
 fi
 
 # 3. 清理 APT 缓存
 echo "清理 APT 缓存..."
-sudo apt-get clean
-sudo rm -rf /var/lib/apt/lists/*
+ apt-get clean
+ rm -rf /var/lib/apt/lists/*
 
 # 4. 更新软件包列表
 echo "更新软件包列表..."
-sudo apt-get update
+ apt-get update
 
 # 5. 修复可能的依赖问题
 echo "修复依赖关系..."
-sudo dpkg --configure -a
-sudo apt-get --fix-broken install -y
+ dpkg --configure -a
+ apt-get --fix-broken install -y
 
 echo "修复完成！"
 echo ""
