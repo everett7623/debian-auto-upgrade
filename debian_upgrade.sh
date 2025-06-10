@@ -100,28 +100,6 @@ check_system() {
     log_success "系统环境检查完成"
 }
 
-# 检查是否为root用户
-check_root() {
-    if [[ $EUID -eq 0 ]]; then
-        log_warning "检测到以root用户运行，这不是推荐做法"
-        if [[ "${FORCE:-}" != "1" ]]; then
-            read -p "是否继续？[y/N]: " -n 1 -r </dev/tty
-            echo
-            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-                log_info "建议使用普通用户配合sudo运行此脚本"
-                exit 1
-            fi
-        fi
-        USE_SUDO=""
-    else
-        if ! sudo -n true 2>/dev/null; then
-            log_info "需要sudo权限来执行升级操作"
-            sudo -v
-        fi
-        USE_SUDO="sudo"
-    fi
-}
-
 # 改进版本检测 - 更准确的检测
 get_current_version() {
     local version_id=""
@@ -244,14 +222,14 @@ Debian自动逐级升级脚本 v$SCRIPT_VERSION
 📖 用法: $0 [选项]
 
 🔧 选项:
-  -h, --help          显示此帮助信息
-  -v, --version       显示当前Debian版本信息
-  -c, --check         检查是否有可用升级
-  -d, --debug         启用调试模式
-  --fix-only          仅执行系统修复，不进行升级
-  --force             强制执行升级（跳过确认）
-  --stable-only       仅升级到稳定版本，跳过测试版本
-  --allow-testing     允许升级到测试版本（默认行为）
+  -h, --help           显示此帮助信息
+  -v, --version        显示当前Debian版本信息
+  -c, --check          检查是否有可用升级
+  -d, --debug          启用调试模式
+  --fix-only         仅执行系统修复，不进行升级
+  --force            强制执行升级（跳过确认）
+  --stable-only      仅升级到稳定版本，跳过测试版本
+  --allow-testing    允许升级到测试版本（默认行为）
 
 ✨ 功能特性:
   ✅ 自动检测当前Debian版本和目标版本
@@ -269,13 +247,13 @@ Debian自动逐级升级脚本 v$SCRIPT_VERSION
   • Debian 12 (Bookworm) → 13 (Trixie) [测试版本]
 
 💻 示例:
-  $0                    # 执行自动升级
-  $0 --check            # 检查可用升级
-  $0 --version          # 显示版本信息
-  $0 --fix-only         # 仅修复系统问题
-  $0 --debug            # 启用调试模式
-  $0 --stable-only      # 仅升级到稳定版本
-  $0 --force            # 强制升级（跳过确认）
+  $0                   # 执行自动升级
+  $0 --check           # 检查可用升级
+  $0 --version         # 显示版本信息
+  $0 --fix-only        # 仅修复系统问题
+  $0 --debug           # 启用调试模式
+  $0 --stable-only     # 仅升级到稳定版本
+  $0 --force           # 强制升级（跳过确认）
   
 ⚠️  注意事项:
   • 升级前会自动备份重要配置
@@ -447,7 +425,7 @@ post_upgrade_fixes() {
     # 1. 更新GRUB（防止重启问题）
     if command -v update-grub >/dev/null 2>&1; then
         log_info "更新GRUB配置..."
-        $USE_SUDO update-grub 2>/dev/null || true
+        $USE_SUDO update-grUB 2>/dev/null || true
     fi
     
     # 2. 重建initramfs
@@ -602,15 +580,15 @@ main_upgrade() {
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         echo
         echo "📋 版本信息："
-        echo "   • 目标版本: Debian $next_version ($next_codename)"
-        echo "   • 版本状态: $next_status"
-        echo "   • 稳定性: 非稳定版本"
+        echo "    • 目标版本: Debian $next_version ($next_codename)"
+        echo "    • 版本状态: $next_status"
+        echo "    • 稳定性: 非稳定版本"
         echo
         echo "⚠️  风险说明："
-        echo "   • 可能包含未修复的bug和不稳定的功能"
-        echo "   • 软件包可能不完整或存在兼容性问题"
-        echo "   • 不建议在生产环境中使用"
-        echo "   • 升级过程可能失败或导致系统不稳定"
+        echo "    • 可能包含未修复的bug和不稳定的功能"
+        echo "    • 软件包可能不完整或存在兼容性问题"
+        echo "    • 不建议在生产环境中使用"
+        echo "    • 升级过程可能失败或导致系统不稳定"
         echo
         
         if [[ "${FORCE:-}" == "1" ]]; then
@@ -629,8 +607,8 @@ main_upgrade() {
         # 稳定版本的常规确认
         echo
         log_info "🎯 升级到稳定版本："
-        log_info "   从: Debian $current_version ($current_codename) [$current_status]"
-        log_info "   到: Debian $next_version ($next_codename) [$next_status]"
+        log_info "    从: Debian $current_version ($current_codename) [$current_status]"
+        log_info "    到: Debian $next_version ($next_codename) [$next_status]"
         echo
         
         if [[ "${FORCE:-}" == "1" ]]; then
@@ -848,6 +826,18 @@ main() {
     # 设置错误处理
     trap 'error_recovery $?' ERR
     
+    # ** MODIFICATION START: Inline root check logic **
+    if [[ $EUID -eq 0 ]]; then
+        USE_SUDO=""
+    else
+        USE_SUDO="sudo"
+        if ! sudo -n true 2>/dev/null; then
+            log_info "需要sudo权限来执行脚本操作"
+            sudo -v || exit 1 # Exit if sudo validation fails
+        fi
+    fi
+    # ** MODIFICATION END **
+
     # 解析命令行参数
     while [[ $# -gt 0 ]]; do
         case $1 in
@@ -873,7 +863,6 @@ main() {
                 shift
                 ;;
             --fix-only)
-                check_root
                 check_system
                 fix_only_mode
                 exit 0
@@ -902,7 +891,6 @@ main() {
     done
     
     # 默认执行升级
-    check_root
     check_system
     main_upgrade
 }
