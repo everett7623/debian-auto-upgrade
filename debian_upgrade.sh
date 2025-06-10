@@ -3,11 +3,12 @@
 # Debian自动逐级升级脚本 - 修复版
 # 功能：自动检测当前版本并升级到下一个版本，直到最新版本
 # 适用于大部分Debian系统，包括VPS环境
+# v2.3 - 修复重启卡住和10→11升级问题
 
 set -e  # 遇到错误立即退出
 
 # 脚本版本
-SCRIPT_VERSION="2.2"
+SCRIPT_VERSION="2.3"
 
 # 颜色定义
 RED='\033[0;31m'
@@ -400,7 +401,156 @@ check_upgrade() {
     echo "========================================="
 }
 
-# 简化的主升级逻辑（基础版本）
+# 新增：修复Debian升级前的已知问题
+fix_pre_upgrade_issues() {
+    local current_version=$1
+    local next_version=$2
+    
+    log_info "修复升级前的已知问题..."
+    
+    # 针对10到11的升级修复
+    if [[ "$current_version" == "10" && "$next_version" == "11" ]]; then
+        log_info "修复Debian 10到11的特定问题..."
+        
+        # 1. 修复usrmerge问题
+        if ! dpkg -l | grep -q "^ii.*usrmerge"; then
+            log_info "安装usrmerge包..."
+            $USE_SUDO apt-get update
+            $USE_SUDO apt-get install -y usrmerge || {
+                log_warning "usrmerge安装失败，尝试手动修复..."
+            }
+        fi
+        
+        # 2. 修复locale问题
+        if ! locale -a | grep -q "en_US.utf8"; then
+            log_info "生成en_US.UTF-8 locale..."
+            echo "en_US.UTF-8 UTF-8" | $USE_SUDO tee -a /etc/locale.gen
+            $USE_SUDO locale-gen
+        fi
+        
+        # 3. 更新ca-certificates
+        log_info "更新证书..."
+        $USE_SUDO apt-get install -y ca-certificates
+        $USE_SUDO update-ca-certificates
+    fi
+    
+    # 清理可能导致问题的残留配置
+    $USE_SUDO apt-get purge -y $(dpkg -l | grep '^rc' | awk '{print $2}') 2>/dev/null || true
+}
+
+# 新增：升级后的系统修复
+post_upgrade_fixes() {
+    local new_version=$1
+    
+    log_info "执行升级后修复..."
+    
+    # 1. 更新GRUB（防止重启问题）
+    if command -v update-grub >/dev/null 2>&1; then
+        log_info "更新GRUB配置..."
+        $USE_SUDO update-grub 2>/dev/null || true
+    fi
+    
+    # 2. 重建initramfs
+    if command -v update-initramfs >/dev/null 2>&1; then
+        log_info "重建initramfs..."
+        $USE_SUDO update-initramfs -u -k all 2>/dev/null || {
+            log_warning "全部更新失败，只更新当前内核"
+            $USE_SUDO update-initramfs -u
+        }
+    fi
+    
+    # 3. 确保关键服务正常
+    log_info "检查关键服务..."
+    for service in ssh networking; do
+        if systemctl list-unit-files | grep -q "^$service.service"; then
+            $USE_SUDO systemctl enable $service 2>/dev/null || true
+            if ! systemctl is-active $service >/dev/null 2>&1; then
+                $USE_SUDO systemctl start $service 2>/dev/null || true
+            fi
+        fi
+    done
+    
+    # 4. 修复网络配置
+    if [[ -f /etc/network/interfaces ]]; then
+        # 确保lo接口配置存在
+        if ! grep -q "^auto lo" /etc/network/interfaces; then
+            echo -e "\nauto lo\niface lo inet loopback" | $USE_SUDO tee -a /etc/network/interfaces
+        fi
+    fi
+}
+
+# 新增：安全重启函数（替代直接reboot）
+safe_reboot() {
+    log_info "准备安全重启系统..."
+    
+    # 1. 保存当前状态
+    echo "$(date) - Debian upgrade completed" | $USE_SUDO tee /var/run/debian_upgrade_completed
+    
+    # 2. 同步文件系统
+    log_info "同步文件系统..."
+    sync && sync && sync
+    
+    # 3. 创建重启前检查脚本
+    cat << 'EOF' | $USE_SUDO tee /usr/local/bin/pre-reboot-check > /dev/null
+#!/bin/bash
+echo "执行重启前检查..."
+# 检查SSH
+if ! systemctl is-active ssh >/dev/null 2>&1 && ! systemctl is-active sshd >/dev/null 2>&1; then
+    echo "警告: SSH服务未运行！"
+    systemctl start ssh 2>/dev/null || systemctl start sshd 2>/dev/null || true
+fi
+# 检查网络
+if ! ping -c 1 8.8.8.8 >/dev/null 2>&1; then
+    echo "警告: 网络连接可能有问题"
+fi
+echo "检查完成"
+EOF
+    $USE_SUDO chmod +x /usr/local/bin/pre-reboot-check
+    
+    # 4. 执行重启前检查
+    $USE_SUDO /usr/local/bin/pre-reboot-check
+    
+    # 5. 显示重启选项
+    echo
+    log_warning "========================================="
+    log_warning "系统需要重启以完成升级"
+    log_warning "========================================="
+    echo
+    echo "重启选项："
+    echo "1. 使用 systemctl reboot（推荐）"
+    echo "2. 使用 shutdown -r now"
+    echo "3. 稍后手动重启"
+    echo
+    
+    if [[ "${FORCE:-}" == "1" ]]; then
+        log_info "强制模式：请手动重启系统"
+        log_info "建议命令: sudo systemctl reboot"
+        return
+    fi
+    
+    read -p "请选择 [1-3] (默认: 3): " -n 1 -r choice </dev/tty
+    echo
+    
+    case "$choice" in
+        1)
+            log_info "使用 systemctl 重启..."
+            sleep 3
+            $USE_SUDO systemctl reboot
+            ;;
+        2)
+            log_info "使用 shutdown 重启..."
+            sleep 3
+            $USE_SUDO shutdown -r now
+            ;;
+        *)
+            log_info "请稍后手动重启系统"
+            log_info "推荐使用: sudo systemctl reboot"
+            log_warning "重要：重启前请确保SSH服务正常运行"
+            ;;
+    esac
+}
+
+# 修改主升级逻辑
 main_upgrade() {
     local current_version=$(get_current_version)
     local version_info=$(get_version_info "$current_version")
@@ -497,6 +647,17 @@ main_upgrade() {
     
     log_info "🚀 开始升级过程..."
     
+    # 执行升级前修复
+    fix_pre_upgrade_issues "$current_version" "$next_version"
+    
+    # 备份重要配置
+    local backup_dir="/root/debian_upgrade_backup_$(date +%Y%m%d_%H%M%S)"
+    log_info "备份重要配置到: $backup_dir"
+    $USE_SUDO mkdir -p "$backup_dir"
+    $USE_SUDO cp -r /etc/apt/sources.list* "$backup_dir/" 2>/dev/null || true
+    $USE_SUDO cp -r /etc/network "$backup_dir/" 2>/dev/null || true
+    $USE_SUDO cp -r /etc/ssh "$backup_dir/" 2>/dev/null || true
+    
     # 简化的升级步骤
     log_info "步骤1: 更新软件源配置"
     
@@ -585,6 +746,9 @@ EOF
     $USE_SUDO apt-get autoremove -y --purge 2>/dev/null || true
     $USE_SUDO apt-get autoclean 2>/dev/null || true
     
+    # 执行升级后修复
+    post_upgrade_fixes "$next_version"
+    
     # 验证升级结果
     sleep 3
     local new_version=$(get_current_version)
@@ -595,9 +759,9 @@ EOF
         log_success "========================================="
         echo
         log_info "📝 重要提醒："
-        log_info "1. 🔄 建议重启系统以确保所有更改生效"
+        log_info "1. 🔄 需要重启系统以确保所有更改生效"
         log_info "2. 🔧 重启后可以再次运行此脚本继续升级到更新版本"
-        log_info "3. 🛡️  如遇问题，可使用备份配置进行恢复"
+        log_info "3. 🛡️  如遇问题，备份位置: $backup_dir"
         
         # 检查是否还有更高版本可升级
         local further_version=$(get_next_version "$next_version")
@@ -616,19 +780,8 @@ EOF
         fi
         
         echo
-        if [[ "${FORCE:-}" == "1" ]]; then
-            log_info "强制模式已启用，建议手动重启系统"
-        else
-            read -p "是否现在重启系统? [y/N]: " -n 1 -r </dev/tty
-            echo
-            if [[ $REPLY =~ ^[Yy]$ ]]; then
-                log_info "🔄 正在重启系统..."
-                sleep 2
-                $USE_SUDO reboot
-            else
-                log_info "请稍后手动重启系统: sudo reboot"
-            fi
-        fi
+        # 使用安全重启替代直接reboot
+        safe_reboot
     else
         log_error "升级验证失败，请检查系统状态"
         log_error "期望版本: Debian $next_version"
