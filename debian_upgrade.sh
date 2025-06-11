@@ -296,15 +296,6 @@ check_system() {
 # 检查是否为root用户
 check_root() {
     if [[ $EUID -eq 0 ]]; then
-        log_warning "检测到以root用户运行，这不是推荐做法"
-        if [[ "${FORCE:-}" != "1" ]]; then
-            read -p "是否继续？[y/N]: " -n 1 -r </dev/tty
-            echo
-            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-                log_info "建议使用普通用户配合sudo运行此脚本"
-                exit 1
-            fi
-        fi
         USE_SUDO=""
     else
         if ! sudo -n true 2>/dev/null; then
