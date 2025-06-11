@@ -7,7 +7,7 @@
 set -e  # 遇到错误立即退出
 
 # 脚本版本
-SCRIPT_VERSION="2.4"
+SCRIPT_VERSION="2.5"
 
 # 颜色定义
 RED='\033[0;31m'
@@ -216,27 +216,55 @@ clean_old_kernels() {
     
     # 获取当前运行的内核版本
     local current_kernel=$(uname -r)
+    log_info "当前运行内核: $current_kernel"
+    
+    # 获取最新安装的内核版本
+    local latest_kernel=$(ls -t /boot/vmlinuz-* | head -1 | sed 's/\/boot\/vmlinuz-//')
+    log_info "最新安装内核: $latest_kernel"
     
     # 列出所有已安装的内核
-    local installed_kernels=$(dpkg -l | grep linux-image | grep -E '^ii' | awk '{print $2}' | grep -v "$current_kernel")
+    local installed_kernels=$(dpkg -l | grep linux-image | grep -E '^ii' | awk '{print $2}')
     
     if [[ -n "$installed_kernels" ]]; then
-        local count=$(echo "$installed_kernels" | wc -l)
-        log_info "发现 $count 个旧内核，保留当前内核和最新的一个"
+        local count=0
+        local kernels_to_remove=""
         
-        # 保留最新的内核
-        local kernels_to_remove=$(echo "$installed_kernels" | head -n -1)
+        for kernel_pkg in $installed_kernels; do
+            # 提取内核版本号
+            local kernel_ver=$(echo "$kernel_pkg" | sed 's/linux-image-//')
+            
+            # 跳过当前运行的内核和最新的内核
+            if [[ "$kernel_ver" != "$current_kernel" ]] && [[ "$kernel_ver" != "$latest_kernel" ]] && [[ "$kernel_pkg" != "linux-image-amd64" ]]; then
+                kernels_to_remove="$kernels_to_remove $kernel_pkg"
+                ((count++))
+            fi
+        done
         
         if [[ -n "$kernels_to_remove" ]]; then
+            log_info "将删除 $count 个旧内核"
             for kernel in $kernels_to_remove; do
                 log_debug "删除内核: $kernel"
                 $USE_SUDO apt-get remove --purge -y "$kernel" 2>/dev/null || true
             done
+            
+            # 清理相关的头文件包
+            $USE_SUDO apt-get autoremove -y --purge 2>/dev/null || true
+        else
+            log_info "没有需要清理的旧内核"
         fi
     fi
     
-    # 清理残留文件
-    $USE_SUDO apt-get autoremove -y --purge 2>/dev/null || true
+    # 清理/boot目录中的残留文件
+    log_debug "清理/boot目录残留文件"
+    $USE_SUDO find /boot -name "*.old" -delete 2>/dev/null || true
+    $USE_SUDO find /boot -name "*.bak" -delete 2>/dev/null || true
+    
+    # 显示/boot使用情况
+    if mount | grep -q " /boot "; then
+        local boot_usage=$(df -h /boot | awk 'NR==2 {print $5}')
+        local boot_avail=$(df -h /boot | awk 'NR==2 {print $4}')
+        log_info "/boot分区使用率: $boot_usage, 可用空间: $boot_avail"
+    fi
 }
 
 # 安全的GRUB更新
@@ -249,6 +277,7 @@ update_grub_safe() {
     # 首先更新GRUB配置
     if ! $USE_SUDO update-grub 2>/dev/null; then
         log_warning "update-grub失败，尝试修复"
+        $USE_SUDO grub-mkconfig -o /boot/grub/grub.cfg 2>/dev/null || true
     fi
     
     if [[ "$boot_mode" == "uefi" ]]; then
@@ -284,28 +313,42 @@ update_grub_safe() {
         log_info "BIOS模式：安装grub-pc"
         
         # 确保grub-pc已安装
-        DEBIAN_FRONTEND=noninteractive $USE_SUDO apt-get install -y grub-pc 2>/dev/null || true
+        DEBIAN_FRONTEND=noninteractive $USE_SUDO apt-get install -y grub-pc grub-pc-bin 2>/dev/null || true
         
         if [[ -n "$boot_disk" ]]; then
             log_info "安装GRUB到: $boot_disk"
             
-            # 使用更安全的方式安装GRUB
-            # 先尝试非交互式安装
-            DEBIAN_FRONTEND=noninteractive $USE_SUDO grub-install \
-                --recheck --no-floppy "$boot_disk" 2>/dev/null || {
+            # 使用多种方法确保GRUB安装成功
+            # 方法1：标准安装
+            if ! $USE_SUDO grub-install --target=i386-pc --recheck --no-floppy --force "$boot_disk" 2>/dev/null; then
+                log_warning "标准GRUB安装失败，尝试其他方法"
                 
-                log_warning "GRUB安装失败，尝试使用dpkg-reconfigure"
-                
-                # 设置debconf选项来自动选择磁盘
-                echo "grub-pc grub-pc/install_devices multiselect $boot_disk" | \
-                    $USE_SUDO debconf-set-selections
-                
-                # 重新配置grub-pc
-                DEBIAN_FRONTEND=noninteractive $USE_SUDO dpkg-reconfigure grub-pc 2>/dev/null || {
-                    log_error "GRUB安装失败！系统可能无法启动"
-                    log_info "建议手动运行: sudo grub-install $boot_disk"
-                }
-            }
+                # 方法2：使用force-file-id
+                if ! $USE_SUDO grub-install --target=i386-pc --force-file-id --recheck "$boot_disk" 2>/dev/null; then
+                    log_warning "force-file-id安装失败，尝试dpkg-reconfigure"
+                    
+                    # 方法3：使用dpkg-reconfigure
+                    echo "grub-pc grub-pc/install_devices multiselect $boot_disk" | \
+                        $USE_SUDO debconf-set-selections
+                    echo "grub-pc grub-pc/install_devices_empty boolean false" | \
+                        $USE_SUDO debconf-set-selections
+                    
+                    DEBIAN_FRONTEND=noninteractive $USE_SUDO dpkg-reconfigure grub-pc 2>/dev/null || {
+                        log_error "所有GRUB安装方法都失败了！"
+                        log_info "请在重启前手动运行："
+                        log_info "  sudo grub-install --force $boot_disk"
+                        log_info "  sudo update-grub"
+                    }
+                fi
+            fi
+            
+            # 验证MBR
+            log_debug "验证MBR..."
+            if $USE_SUDO dd if="$boot_disk" bs=512 count=1 2>/dev/null | strings | grep -q GRUB; then
+                log_success "MBR中检测到GRUB"
+            else
+                log_warning "MBR中未检测到GRUB标识"
+            fi
         else
             log_error "未检测到引导磁盘！"
             log_info "请手动指定引导磁盘并运行: sudo grub-install /dev/sdX"
@@ -320,6 +363,12 @@ update_grub_safe() {
     
     # 再次更新GRUB配置确保一致性
     $USE_SUDO update-grub 2>/dev/null || true
+    
+    # 创建设备映射文件（某些系统需要）
+    if [[ ! -f /boot/grub/device.map ]]; then
+        log_debug "创建设备映射文件"
+        echo -e "quit\n" | $USE_SUDO grub-mkdevicemap 2>/dev/null || true
+    fi
 }
 
 # 检查系统环境
@@ -525,8 +574,8 @@ pre_upgrade_preparation() {
     log_debug "更新软件包数据库"
     $USE_SUDO apt-get update || log_warning "软件包列表更新失败，继续升级"
     
-    # GRUB预检查
-    log_info "检查GRUB状态"
+    # GRUB预检查和修复
+    log_info "GRUB预检查和修复"
     local boot_mode=$(detect_boot_mode)
     local boot_disk=$(detect_boot_disk)
     
@@ -546,12 +595,27 @@ pre_upgrade_preparation() {
             read -p "是否继续升级？建议先确认引导磁盘 [y/N]: " -n 1 -r </dev/tty
             echo
             if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-                log_info "升级已取消。建议先运行 $0 --fix-only 修复系统"
+                log_info "升级已取消。建议先运行 $0 --fix-grub 修复系统"
                 exit 1
             fi
         fi
     else
         log_success "检测到引导磁盘: $boot_disk (模式: $boot_mode)"
+        
+        # 升级前确保当前GRUB配置正确
+        log_info "更新当前系统的GRUB配置..."
+        $USE_SUDO update-grub 2>/dev/null || {
+            log_warning "GRUB配置更新失败，尝试修复"
+            $USE_SUDO grub-mkconfig -o /boot/grub/grub.cfg 2>/dev/null || true
+        }
+        
+        # 预设GRUB设备
+        if [[ "$boot_mode" == "bios" ]]; then
+            echo "grub-pc grub-pc/install_devices multiselect $boot_disk" | \
+                $USE_SUDO debconf-set-selections
+            echo "grub-pc grub-pc/install_devices_empty boolean false" | \
+                $USE_SUDO debconf-set-selections
+        fi
     fi
     
     log_success "升级前准备工作完成"
@@ -566,17 +630,74 @@ post_upgrade_fixes() {
     # 修复网络配置
     fix_network_config "$backup_dir"
     
-    # 更新initramfs
-    log_info "更新initramfs"
-    $USE_SUDO update-initramfs -u -k all 2>/dev/null || {
-        log_warning "initramfs更新失败，尝试修复"
-        # 如果失败，尝试只更新当前内核
-        $USE_SUDO update-initramfs -u -k $(uname -r) 2>/dev/null || true
-    }
+    # 清理并重建initramfs（重要）
+    log_info "重建initramfs..."
+    # 先清理可能损坏的initramfs
+    $USE_SUDO rm -f /boot/initrd.img-*.bak 2>/dev/null || true
+    
+    # 为所有内核重建initramfs
+    for kernel in $(ls /boot/vmlinuz-* | sed 's/\/boot\/vmlinuz-//'); do
+        log_info "为内核 $kernel 重建initramfs"
+        $USE_SUDO update-initramfs -c -k "$kernel" 2>/dev/null || {
+            log_warning "创建失败，尝试更新"
+            $USE_SUDO update-initramfs -u -k "$kernel" 2>/dev/null || true
+        }
+    done
+    
+    # 确保GRUB包正确安装
+    log_info "确保GRUB包正确安装..."
+    local boot_mode=$(detect_boot_mode)
+    if [[ "$boot_mode" == "uefi" ]]; then
+        # 强制重装GRUB EFI包
+        DEBIAN_FRONTEND=noninteractive $USE_SUDO apt-get install --reinstall -y \
+            grub-efi-amd64 grub-efi-amd64-bin 2>/dev/null || true
+    else
+        # 强制重装GRUB PC包
+        DEBIAN_FRONTEND=noninteractive $USE_SUDO apt-get install --reinstall -y \
+            grub-pc grub-pc-bin 2>/dev/null || true
+    fi
     
     # 更新GRUB（关键步骤）
     log_info "更新GRUB引导程序（关键步骤）"
     update_grub_safe
+    
+    # 强制执行额外的GRUB修复
+    log_info "执行额外的GRUB修复..."
+    local boot_disk=$(detect_boot_disk)
+    if [[ -n "$boot_disk" ]]; then
+        if [[ "$boot_mode" == "uefi" ]]; then
+            # UEFI：确保EFI引导文件存在
+            if [[ -d /boot/efi/EFI ]]; then
+                # 创建多个引导入口以提高兼容性
+                $USE_SUDO grub-install --target=x86_64-efi \
+                    --efi-directory=/boot/efi \
+                    --bootloader-id=debian \
+                    --force-extra-removable 2>/dev/null || true
+                    
+                # 同时创建默认的BOOT入口
+                $USE_SUDO grub-install --target=x86_64-efi \
+                    --efi-directory=/boot/efi \
+                    --removable 2>/dev/null || true
+            fi
+        else
+            # BIOS：多次尝试安装以确保成功
+            log_info "BIOS模式：确保GRUB正确安装到MBR"
+            
+            # 清除并重装MBR
+            $USE_SUDO dd if=/usr/lib/grub/i386-pc/boot.img of="$boot_disk" bs=446 count=1 2>/dev/null || true
+            
+            # 重新安装GRUB
+            $USE_SUDO grub-install --force --recheck "$boot_disk" 2>/dev/null || {
+                log_warning "标准安装失败，使用备用方法"
+                # 备用方法
+                $USE_SUDO grub-install --force-file-id "$boot_disk" 2>/dev/null || true
+            }
+        fi
+    fi
+    
+    # 最终GRUB更新
+    log_info "最终GRUB配置更新..."
+    $USE_SUDO update-grub 2>/dev/null || true
     
     # 验证GRUB安装
     log_info "验证GRUB安装状态"
@@ -589,15 +710,18 @@ post_upgrade_fixes() {
             log_success "EFI引导项检查通过"
         fi
     else
-        # BIOS模式验证较困难，仅检查GRUB文件是否存在
+        # BIOS模式验证
         if [[ ! -f /boot/grub/grub.cfg ]]; then
             log_warning "未找到GRUB配置文件，可能需要手动修复"
-            local boot_disk=$(detect_boot_disk)
-            if [[ -n "$boot_disk" ]]; then
-                log_info "建议运行: sudo grub-install $boot_disk && sudo update-grub"
-            fi
         else
-            log_success "GRUB配置文件存在"
+            local menu_entries=$(grep -c "menuentry " /boot/grub/grub.cfg 2>/dev/null || echo "0")
+            if [[ $menu_entries -eq 0 ]]; then
+                log_warning "GRUB配置文件中没有启动项！"
+                log_info "尝试重新生成配置..."
+                $USE_SUDO grub-mkconfig -o /boot/grub/grub.cfg 2>/dev/null || true
+            else
+                log_success "GRUB配置文件包含 $menu_entries 个启动项"
+            fi
         fi
     fi
     
@@ -617,6 +741,11 @@ post_upgrade_fixes() {
         fi
     done
     
+    # 最后同步文件系统
+    sync
+    sync
+    sync
+    
     log_success "升级后修复工作完成"
 }
 
@@ -624,14 +753,35 @@ post_upgrade_fixes() {
 safe_reboot() {
     log_info "准备安全重启系统..."
     
+    # 最后一次GRUB检查
+    log_info "执行最终GRUB检查..."
+    local boot_disk=$(detect_boot_disk)
+    if [[ -n "$boot_disk" ]]; then
+        log_info "最后一次更新GRUB..."
+        $USE_SUDO update-grub 2>/dev/null || true
+        
+        # BIOS系统额外确保
+        local boot_mode=$(detect_boot_mode)
+        if [[ "$boot_mode" == "bios" ]]; then
+            log_info "BIOS系统：最后一次GRUB安装"
+            $USE_SUDO grub-install --force "$boot_disk" 2>/dev/null || true
+        fi
+    fi
+    
     # 同步文件系统
-    log_debug "同步文件系统"
+    log_info "同步文件系统..."
     sync
     sync
     sync
     
     # 等待所有写入完成
     sleep 3
+    
+    # 确保所有缓存写入磁盘
+    echo 3 | $USE_SUDO tee /proc/sys/vm/drop_caches >/dev/null 2>&1 || true
+    
+    # 再次同步
+    sync
     
     # 确保所有日志已写入
     $USE_SUDO systemctl stop rsyslog 2>/dev/null || true
@@ -644,6 +794,9 @@ safe_reboot() {
     echo "========================================="
     echo "⚡ 系统将在5秒后重启"
     echo "========================================="
+    echo "💡 如果重启失败，请使用救援模式并运行:"
+    echo "   grub-install /dev/sdX && update-grub"
+    echo "========================================="
     echo
     
     # 倒计时
@@ -653,11 +806,14 @@ safe_reboot() {
     done
     echo
     
+    # 最后同步
+    sync
+    
     # 执行重启
     if command -v systemctl >/dev/null 2>&1; then
-        $USE_SUDO systemctl reboot
+        $USE_SUDO systemctl reboot --force
     else
-        $USE_SUDO reboot
+        $USE_SUDO reboot -f
     fi
 }
 
@@ -833,7 +989,8 @@ check_upgrade() {
         
         if [[ "$next_status" == "stable" ]]; then
             echo "✅ 推荐升级到 Debian $next_version - 稳定版本"
-            echo "🚀 执行命令: $0"
+            echo "🔧 升级前建议: $0 --fix-grub (修复引导)"
+            echo "🚀 执行升级: $0"
         elif [[ "$next_status" == "testing" ]]; then
             echo "⚠️  可升级到 Debian $next_version - 测试版本"
             echo "🧪 测试环境: $0 --allow-testing"
@@ -932,6 +1089,8 @@ main_upgrade() {
         log_info "🎯 升级到稳定版本："
         log_info "   从: Debian $current_version ($current_codename) [$current_status]"
         log_info "   到: Debian $next_version ($next_codename) [$next_status]"
+        echo
+        log_warning "⚠️  重要提示: 如果之前升级后重启失败，建议先运行: $0 --fix-grub"
         echo
         
         if [[ "${FORCE:-}" == "1" ]]; then
@@ -1073,6 +1232,17 @@ EOF
         if [[ "${FORCE:-}" == "1" ]]; then
             log_info "强制模式已启用，建议手动重启系统"
         else
+            # 重启前的最终GRUB检查
+            log_warning "⚠️  重要：重启前建议执行GRUB修复以确保系统能正常启动"
+            echo
+            read -p "是否先执行GRUB修复？强烈建议选择是 [Y/n]: " -n 1 -r </dev/tty
+            echo
+            if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+                log_info "执行GRUB修复..."
+                fix_grub_quick
+            fi
+            
+            echo
             read -p "是否现在重启系统? [y/N]: " -n 1 -r </dev/tty
             echo
             if [[ $REPLY =~ ^[Yy]$ ]]; then
@@ -1087,6 +1257,61 @@ EOF
         log_error "检测版本: Debian $new_version"
         exit 1
     fi
+}
+
+# 快速GRUB修复（重启前使用）
+fix_grub_quick() {
+    log_info "执行快速GRUB修复..."
+    
+    local boot_mode=$(detect_boot_mode)
+    local boot_disk=$(detect_boot_disk)
+    
+    # 强制重新生成GRUB配置
+    log_info "重新生成GRUB配置..."
+    $USE_SUDO grub-mkconfig -o /boot/grub/grub.cfg 2>/dev/null || {
+        $USE_SUDO update-grub 2>/dev/null || true
+    }
+    
+    # 如果检测到引导磁盘，强制重新安装
+    if [[ -n "$boot_disk" ]]; then
+        log_info "重新安装GRUB到 $boot_disk..."
+        
+        if [[ "$boot_mode" == "uefi" ]]; then
+            # UEFI模式
+            $USE_SUDO grub-install --target=x86_64-efi \
+                --efi-directory=/boot/efi \
+                --bootloader-id=debian \
+                --recheck \
+                --force-extra-removable 2>/dev/null || {
+                log_warning "UEFI GRUB安装警告，但继续"
+            }
+        else
+            # BIOS模式 - 使用多种方法确保成功
+            log_info "BIOS模式GRUB安装..."
+            
+            # 方法1：直接安装
+            $USE_SUDO grub-install --force "$boot_disk" 2>/dev/null || {
+                log_warning "直接安装失败，尝试其他方法"
+                
+                # 方法2：使用dpkg-reconfigure
+                echo "grub-pc grub-pc/install_devices multiselect $boot_disk" | \
+                    $USE_SUDO debconf-set-selections
+                DEBIAN_FRONTEND=noninteractive $USE_SUDO dpkg-reconfigure grub-pc 2>/dev/null || true
+            }
+        fi
+    else
+        log_warning "未检测到引导磁盘，跳过GRUB重装"
+        log_info "建议手动执行: sudo grub-install /dev/sdX"
+    fi
+    
+    # 最终更新
+    $USE_SUDO update-grub 2>/dev/null || true
+    
+    # 同步文件系统
+    sync
+    sync
+    
+    log_success "GRUB快速修复完成"
 }
 
 # GRUB专门修复模式
