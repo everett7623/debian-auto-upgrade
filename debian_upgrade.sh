@@ -1,9 +1,8 @@
 #!/bin/bash
 
-# Debian自动逐级升级脚本 - 修复版
+# Debian自动逐级升级脚本
 # 功能：自动检测当前版本并升级到下一个版本，直到最新版本
 # 适用于大部分Debian系统，包括VPS环境
-# v2.3 - 修复重启卡住和10→11升级问题
 
 set -e  # 遇到错误立即退出
 
@@ -70,6 +69,185 @@ get_user_confirmation() {
     done
 }
 
+# 检测启动模式（UEFI或BIOS）
+detect_boot_mode() {
+    if [[ -d /sys/firmware/efi ]]; then
+        echo "uefi"
+    else
+        echo "bios"
+    fi
+}
+
+# 检测引导磁盘（支持NVMe、虚拟磁盘等）
+detect_boot_disk() {
+    local boot_disk=""
+    
+    # 方法1：从/boot分区查找
+    if mount | grep -q " /boot "; then
+        boot_disk=$(mount | grep " /boot " | awk '{print $1}' | sed 's/[0-9]*$//')
+    else
+        # 方法2：从根分区查找
+        boot_disk=$(mount | grep " / " | grep -v tmpfs | head -1 | awk '{print $1}' | sed 's/[0-9]*$//')
+    fi
+    
+    # 清理设备名称（处理NVMe设备）
+    boot_disk=$(echo "$boot_disk" | sed 's/p[0-9]*$//')
+    
+    # 验证设备存在
+    if [[ -b "$boot_disk" ]]; then
+        echo "$boot_disk"
+    else
+        # 尝试常见设备
+        for disk in /dev/sda /dev/vda /dev/xvda /dev/nvme0n1; do
+            if [[ -b "$disk" ]]; then
+                echo "$disk"
+                return
+            fi
+        done
+        echo ""
+    fi
+}
+
+# 保存网络配置
+save_network_config() {
+    local backup_dir="/root/debian_upgrade_backup_$(date +%Y%m%d_%H%M%S)"
+    
+    log_debug "备份网络配置到 $backup_dir"
+    $USE_SUDO mkdir -p "$backup_dir/network"
+    
+    # 备份网络配置文件
+    $USE_SUDO cp -a /etc/network/interfaces* "$backup_dir/network/" 2>/dev/null || true
+    $USE_SUDO cp -a /etc/systemd/network/* "$backup_dir/network/" 2>/dev/null || true
+    
+    # 记录当前网络接口信息
+    ip addr show > "$backup_dir/network/ip_addr_before.txt"
+    ip route show > "$backup_dir/network/ip_route_before.txt"
+    
+    # 记录当前网络接口名称
+    local current_interfaces=$(ip -o link show | awk -F': ' '{print $2}' | grep -v lo)
+    echo "$current_interfaces" > "$backup_dir/network/interface_names.txt"
+    
+    echo "$backup_dir"
+}
+
+# 修复网络配置
+fix_network_config() {
+    local backup_dir="$1"
+    
+    log_debug "检查并修复网络配置..."
+    
+    # 获取当前网络接口名称
+    local new_interfaces=$(ip -o link show | awk -F': ' '{print $2}' | grep -v lo)
+    
+    # 如果有备份，比较接口名称
+    if [[ -f "$backup_dir/network/interface_names.txt" ]]; then
+        local old_interfaces=$(cat "$backup_dir/network/interface_names.txt")
+        
+        # 检查是否有接口名称变化
+        for old_if in $old_interfaces; do
+            if ! echo "$new_interfaces" | grep -q "^$old_if$"; then
+                log_warning "网络接口 $old_if 已不存在"
+                
+                # 尝试找到对应的新接口
+                local new_if=$(echo "$new_interfaces" | head -1)
+                
+                if [[ -n "$new_if" ]]; then
+                    log_info "尝试将 $old_if 的配置应用到 $new_if"
+                    
+                    # 更新 /etc/network/interfaces
+                    if [[ -f /etc/network/interfaces ]]; then
+                        $USE_SUDO sed -i "s/\b$old_if\b/$new_if/g" /etc/network/interfaces
+                    fi
+                fi
+            fi
+        done
+    fi
+    
+    # 确保网络服务正确配置
+    if systemctl is-enabled NetworkManager >/dev/null 2>&1; then
+        log_debug "NetworkManager 已启用"
+    elif systemctl is-enabled systemd-networkd >/dev/null 2>&1; then
+        log_debug "systemd-networkd 已启用"
+    else
+        log_debug "启用 networking.service"
+        $USE_SUDO systemctl enable networking.service 2>/dev/null || true
+    fi
+}
+
+# 清理旧内核（释放/boot空间）
+clean_old_kernels() {
+    log_info "清理旧内核以释放/boot空间..."
+    
+    # 获取当前运行的内核版本
+    local current_kernel=$(uname -r)
+    
+    # 列出所有已安装的内核
+    local installed_kernels=$(dpkg -l | grep linux-image | grep -E '^ii' | awk '{print $2}' | grep -v "$current_kernel")
+    
+    if [[ -n "$installed_kernels" ]]; then
+        local count=$(echo "$installed_kernels" | wc -l)
+        log_info "发现 $count 个旧内核，保留当前内核和最新的一个"
+        
+        # 保留最新的内核
+        local kernels_to_remove=$(echo "$installed_kernels" | head -n -1)
+        
+        if [[ -n "$kernels_to_remove" ]]; then
+            for kernel in $kernels_to_remove; do
+                log_debug "删除内核: $kernel"
+                $USE_SUDO apt-get remove --purge -y "$kernel" 2>/dev/null || true
+            done
+        fi
+    fi
+    
+    # 清理残留文件
+    $USE_SUDO apt-get autoremove -y --purge 2>/dev/null || true
+}
+
+# 安全的GRUB更新
+update_grub_safe() {
+    local boot_mode=$(detect_boot_mode)
+    local boot_disk=$(detect_boot_disk)
+    
+    log_debug "更新GRUB配置 (启动模式: $boot_mode)"
+    
+    if [[ "$boot_mode" == "uefi" ]]; then
+        # UEFI模式
+        log_debug "检测到UEFI启动模式"
+        
+        # 确保安装正确的GRUB包
+        if ! dpkg -l | grep -q "^ii.*grub-efi-amd64"; then
+            log_info "安装 grub-efi-amd64"
+            DEBIAN_FRONTEND=noninteractive $USE_SUDO apt-get install -y grub-efi-amd64 2>/dev/null || true
+        fi
+        
+        # 更新GRUB配置
+        $USE_SUDO update-grub 2>/dev/null || true
+        
+        # 重新安装到EFI分区
+        if [[ -d /boot/efi ]]; then
+            $USE_SUDO grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=debian 2>/dev/null || true
+        fi
+    else
+        # BIOS模式
+        log_debug "检测到BIOS启动模式"
+        
+        # 确保安装正确的GRUB包
+        if ! dpkg -l | grep -q "^ii.*grub-pc"; then
+            log_info "安装 grub-pc"
+            DEBIAN_FRONTEND=noninteractive $USE_SUDO apt-get install -y grub-pc 2>/dev/null || true
+        fi
+        
+        # 更新GRUB配置
+        $USE_SUDO update-grub 2>/dev/null || true
+        
+        # 重新安装到引导磁盘
+        if [[ -n "$boot_disk" ]]; then
+            log_debug "安装GRUB到 $boot_disk"
+            $USE_SUDO grub-install "$boot_disk" 2>/dev/null || true
+        fi
+    fi
+}
+
 # 检查系统环境
 check_system() {
     log_info "检查系统环境..."
@@ -91,13 +269,50 @@ check_system() {
         log_warning "根分区可用空间不足2GB，升级过程中可能出现空间不足"
     fi
     
+    # 检查/boot分区空间
+    if mount | grep -q " /boot "; then
+        local boot_space=$(df /boot | awk 'NR==2 {print $4}')
+        if [[ $boot_space -lt 204800 ]]; then  # 200MB
+            log_warning "/boot分区可用空间不足200MB，需要清理旧内核"
+            clean_old_kernels
+        fi
+    fi
+    
     # 检查内存
     local available_memory=$(free -m | awk 'NR==2{printf "%.0f", $7}')
     if [[ $available_memory -lt 512 ]]; then
         log_warning "可用内存不足512MB，升级过程可能较慢"
     fi
     
+    # 检查启动模式
+    local boot_mode=$(detect_boot_mode)
+    local boot_disk=$(detect_boot_disk)
+    log_debug "启动模式: $boot_mode"
+    log_debug "引导磁盘: ${boot_disk:-未检测到}"
+    
     log_success "系统环境检查完成"
+}
+
+# 检查是否为root用户
+check_root() {
+    if [[ $EUID -eq 0 ]]; then
+        log_warning "检测到以root用户运行，这不是推荐做法"
+        if [[ "${FORCE:-}" != "1" ]]; then
+            read -p "是否继续？[y/N]: " -n 1 -r </dev/tty
+            echo
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                log_info "建议使用普通用户配合sudo运行此脚本"
+                exit 1
+            fi
+        fi
+        USE_SUDO=""
+    else
+        if ! sudo -n true 2>/dev/null; then
+            log_info "需要sudo权限来执行升级操作"
+            sudo -v
+        fi
+        USE_SUDO="sudo"
+    fi
 }
 
 # 改进版本检测 - 更准确的检测
@@ -214,6 +429,116 @@ get_next_version() {
     esac
 }
 
+# 升级前的准备工作
+pre_upgrade_preparation() {
+    log_info "执行升级前准备工作..."
+    
+    # 停止不必要的服务
+    for service in unattended-upgrades apt-daily apt-daily-upgrade; do
+        if systemctl is-active "$service" >/dev/null 2>&1; then
+            log_debug "停止服务: $service"
+            $USE_SUDO systemctl stop "$service" 2>/dev/null || true
+        fi
+    done
+    
+    # 清理APT缓存和锁文件
+    log_debug "清理APT缓存和锁文件"
+    $USE_SUDO rm -f /var/lib/dpkg/lock-frontend 2>/dev/null || true
+    $USE_SUDO rm -f /var/lib/dpkg/lock 2>/dev/null || true
+    $USE_SUDO rm -f /var/cache/apt/archives/lock 2>/dev/null || true
+    $USE_SUDO rm -f /var/lib/apt/lists/lock 2>/dev/null || true
+    
+    # 修复可能的dpkg问题
+    log_debug "修复dpkg状态"
+    $USE_SUDO dpkg --configure -a 2>/dev/null || true
+    
+    # 修复依赖关系
+    log_debug "修复依赖关系"
+    DEBIAN_FRONTEND=noninteractive $USE_SUDO apt-get --fix-broken install -y 2>/dev/null || true
+    
+    # 更新包数据库
+    log_debug "更新软件包数据库"
+    $USE_SUDO apt-get update || log_warning "软件包列表更新失败，继续升级"
+    
+    log_success "升级前准备工作完成"
+}
+
+# 升级后的修复工作
+post_upgrade_fixes() {
+    local backup_dir="$1"
+    
+    log_info "执行升级后修复工作..."
+    
+    # 修复网络配置
+    fix_network_config "$backup_dir"
+    
+    # 更新initramfs
+    log_info "更新initramfs"
+    $USE_SUDO update-initramfs -u -k all 2>/dev/null || true
+    
+    # 更新GRUB
+    update_grub_safe
+    
+    # 清理残留配置
+    log_info "清理残留配置"
+    $USE_SUDO apt-get autoremove -y --purge 2>/dev/null || true
+    $USE_SUDO apt-get autoclean 2>/dev/null || true
+    
+    # 检查关键服务
+    log_debug "检查关键服务状态"
+    for service in ssh sshd networking systemd-networkd NetworkManager; do
+        if systemctl list-unit-files "$service.service" >/dev/null 2>&1; then
+            if systemctl is-enabled "$service" >/dev/null 2>&1; then
+                log_debug "确保服务 $service 正常运行"
+                $USE_SUDO systemctl restart "$service" 2>/dev/null || true
+            fi
+        fi
+    done
+    
+    log_success "升级后修复工作完成"
+}
+
+# 安全重启函数
+safe_reboot() {
+    log_info "准备安全重启系统..."
+    
+    # 同步文件系统
+    log_debug "同步文件系统"
+    sync
+    sync
+    sync
+    
+    # 等待所有写入完成
+    sleep 3
+    
+    # 确保所有日志已写入
+    $USE_SUDO systemctl stop rsyslog 2>/dev/null || true
+    
+    # 使用systemctl重启（更安全）
+    log_info "执行系统重启..."
+    
+    # 给用户最后的提示
+    echo
+    echo "========================================="
+    echo "⚡ 系统将在5秒后重启"
+    echo "========================================="
+    echo
+    
+    # 倒计时
+    for i in 5 4 3 2 1; do
+        echo -n "$i... "
+        sleep 1
+    done
+    echo
+    
+    # 执行重启
+    if command -v systemctl >/dev/null 2>&1; then
+        $USE_SUDO systemctl reboot
+    else
+        $USE_SUDO reboot
+    fi
+}
+
 # 显示帮助信息
 show_help() {
     cat << EOF
@@ -222,24 +547,25 @@ Debian自动逐级升级脚本 v$SCRIPT_VERSION
 📖 用法: $0 [选项]
 
 🔧 选项:
-  -h, --help           显示此帮助信息
-  -v, --version        显示当前Debian版本信息
-  -c, --check          检查是否有可用升级
-  -d, --debug          启用调试模式
-  --fix-only         仅执行系统修复，不进行升级
-  --force            强制执行升级（跳过确认）
-  --stable-only      仅升级到稳定版本，跳过测试版本
-  --allow-testing    允许升级到测试版本（默认行为）
+  -h, --help          显示此帮助信息
+  -v, --version       显示当前Debian版本信息
+  -c, --check         检查是否有可用升级
+  -d, --debug         启用调试模式
+  --fix-only          仅执行系统修复，不进行升级
+  --force             强制执行升级（跳过确认）
+  --stable-only       仅升级到稳定版本，跳过测试版本
+  --allow-testing     允许升级到测试版本（默认行为）
 
 ✨ 功能特性:
   ✅ 自动检测当前Debian版本和目标版本
   ✅ 逐级安全升级，避免跨版本问题
   ✅ 智能软件源选择和镜像优化
-  ✅ VPS环境适配和问题修复
-  ✅ 分阶段升级减少风险
+  ✅ UEFI/BIOS自动检测和适配
+  ✅ NVMe等新型存储设备支持
+  ✅ 网络接口名称变化自动修复
+  ✅ /boot分区空间自动清理
   ✅ 完整的配置备份和恢复
-  ✅ 网络和系统环境检查
-  ✅ 详细的日志和错误处理
+  ✅ 安全的重启机制
 
 🔄 支持的升级路径:
   • Debian 8 (Jessie) → 9 (Stretch) → 10 (Buster)
@@ -247,13 +573,13 @@ Debian自动逐级升级脚本 v$SCRIPT_VERSION
   • Debian 12 (Bookworm) → 13 (Trixie) [测试版本]
 
 💻 示例:
-  $0                   # 执行自动升级
-  $0 --check           # 检查可用升级
-  $0 --version         # 显示版本信息
-  $0 --fix-only        # 仅修复系统问题
-  $0 --debug           # 启用调试模式
-  $0 --stable-only     # 仅升级到稳定版本
-  $0 --force           # 强制升级（跳过确认）
+  $0                    # 执行自动升级
+  $0 --check            # 检查可用升级
+  $0 --version          # 显示版本信息
+  $0 --fix-only         # 仅修复系统问题
+  $0 --debug            # 启用调试模式
+  $0 --stable-only      # 仅升级到稳定版本
+  $0 --force            # 强制升级（跳过确认）
   
 ⚠️  注意事项:
   • 升级前会自动备份重要配置
@@ -290,7 +616,7 @@ check_upgrade() {
                 echo
                 echo "💡 说明："
                 echo "- 当前使用最新稳定版本，建议保持"
-                echo "- 如需体验新功能，可添加 --allow-testing 选项"
+                echo "- 如需体验新功能，可使用 --allow-testing 选项"
                 echo "- 测试版本风险较高，仅建议测试环境使用"
             fi
         else
@@ -321,6 +647,12 @@ check_upgrade() {
     # 显示系统状态
     echo "🔧 系统状态检查:"
     
+    # 启动模式
+    local boot_mode=$(detect_boot_mode)
+    local boot_disk=$(detect_boot_disk)
+    echo "- 启动模式: $boot_mode"
+    echo "- 引导磁盘: ${boot_disk:-未检测到}"
+    
     # 磁盘空间
     local disk_usage=$(df -h / | awk 'NR==2 {print $5}')
     local available_space=$(df / | awk 'NR==2 {print $4}')
@@ -329,6 +661,18 @@ check_upgrade() {
         echo "  ⚠️  可用空间不足2GB"
     else
         echo "  ✅ 磁盘空间充足"
+    fi
+    
+    # /boot分区
+    if mount | grep -q " /boot "; then
+        local boot_usage=$(df -h /boot | awk 'NR==2 {print $5}')
+        local boot_space=$(df /boot | awk 'NR==2 {print $4}')
+        echo "- /boot使用: $boot_usage"
+        if [[ $boot_space -lt 204800 ]]; then
+            echo "  ⚠️  /boot空间不足200MB"
+        else
+            echo "  ✅ /boot空间充足"
+        fi
     fi
     
     # 内存状态
@@ -379,156 +723,7 @@ check_upgrade() {
     echo "========================================="
 }
 
-# 新增：修复Debian升级前的已知问题
-fix_pre_upgrade_issues() {
-    local current_version=$1
-    local next_version=$2
-    
-    log_info "修复升级前的已知问题..."
-    
-    # 针对10到11的升级修复
-    if [[ "$current_version" == "10" && "$next_version" == "11" ]]; then
-        log_info "修复Debian 10到11的特定问题..."
-        
-        # 1. 修复usrmerge问题
-        if ! dpkg -l | grep -q "^ii.*usrmerge"; then
-            log_info "安装usrmerge包..."
-            $USE_SUDO apt-get update
-            $USE_SUDO apt-get install -y usrmerge || {
-                log_warning "usrmerge安装失败，尝试手动修复..."
-            }
-        fi
-        
-        # 2. 修复locale问题
-        if ! locale -a | grep -q "en_US.utf8"; then
-            log_info "生成en_US.UTF-8 locale..."
-            echo "en_US.UTF-8 UTF-8" | $USE_SUDO tee -a /etc/locale.gen
-            $USE_SUDO locale-gen
-        fi
-        
-        # 3. 更新ca-certificates
-        log_info "更新证书..."
-        $USE_SUDO apt-get install -y ca-certificates
-        $USE_SUDO update-ca-certificates
-    fi
-    
-    # 清理可能导致问题的残留配置
-    $USE_SUDO apt-get purge -y $(dpkg -l | grep '^rc' | awk '{print $2}') 2>/dev/null || true
-}
-
-# 新增：升级后的系统修复
-post_upgrade_fixes() {
-    local new_version=$1
-    
-    log_info "执行升级后修复..."
-    
-    # 1. 更新GRUB（防止重启问题）
-    if command -v update-grub >/dev/null 2>&1; then
-        log_info "更新GRUB配置..."
-        $USE_SUDO update-grUB 2>/dev/null || true
-    fi
-    
-    # 2. 重建initramfs
-    if command -v update-initramfs >/dev/null 2>&1; then
-        log_info "重建initramfs..."
-        $USE_SUDO update-initramfs -u -k all 2>/dev/null || {
-            log_warning "全部更新失败，只更新当前内核"
-            $USE_SUDO update-initramfs -u
-        }
-    fi
-    
-    # 3. 确保关键服务正常
-    log_info "检查关键服务..."
-    for service in ssh networking; do
-        if systemctl list-unit-files | grep -q "^$service.service"; then
-            $USE_SUDO systemctl enable $service 2>/dev/null || true
-            if ! systemctl is-active $service >/dev/null 2>&1; then
-                $USE_SUDO systemctl start $service 2>/dev/null || true
-            fi
-        fi
-    done
-    
-    # 4. 修复网络配置
-    if [[ -f /etc/network/interfaces ]]; then
-        # 确保lo接口配置存在
-        if ! grep -q "^auto lo" /etc/network/interfaces; then
-            echo -e "\nauto lo\niface lo inet loopback" | $USE_SUDO tee -a /etc/network/interfaces
-        fi
-    fi
-}
-
-# 新增：安全重启函数（替代直接reboot）
-safe_reboot() {
-    log_info "准备安全重启系统..."
-    
-    # 1. 保存当前状态
-    echo "$(date) - Debian upgrade completed" | $USE_SUDO tee /var/run/debian_upgrade_completed
-    
-    # 2. 同步文件系统
-    log_info "同步文件系统..."
-    sync && sync && sync
-    
-    # 3. 创建重启前检查脚本
-    cat << 'EOF' | $USE_SUDO tee /usr/local/bin/pre-reboot-check > /dev/null
-#!/bin/bash
-echo "执行重启前检查..."
-# 检查SSH
-if ! systemctl is-active ssh >/dev/null 2>&1 && ! systemctl is-active sshd >/dev/null 2>&1; then
-    echo "警告: SSH服务未运行！"
-    systemctl start ssh 2>/dev/null || systemctl start sshd 2>/dev/null || true
-fi
-# 检查网络
-if ! ping -c 1 8.8.8.8 >/dev/null 2>&1; then
-    echo "警告: 网络连接可能有问题"
-fi
-echo "检查完成"
-EOF
-    $USE_SUDO chmod +x /usr/local/bin/pre-reboot-check
-    
-    # 4. 执行重启前检查
-    $USE_SUDO /usr/local/bin/pre-reboot-check
-    
-    # 5. 显示重启选项
-    echo
-    log_warning "========================================="
-    log_warning "系统需要重启以完成升级"
-    log_warning "========================================="
-    echo
-    echo "重启选项："
-    echo "1. 使用 systemctl reboot（推荐）"
-    echo "2. 使用 shutdown -r now"
-    echo "3. 稍后手动重启"
-    echo
-    
-    if [[ "${FORCE:-}" == "1" ]]; then
-        log_info "强制模式：请手动重启系统"
-        log_info "建议命令: sudo systemctl reboot"
-        return
-    fi
-    
-    read -p "请选择 [1-3] (默认: 3): " -n 1 -r choice </dev/tty
-    echo
-    
-    case "$choice" in
-        1)
-            log_info "使用 systemctl 重启..."
-            sleep 3
-            $USE_SUDO systemctl reboot
-            ;;
-        2)
-            log_info "使用 shutdown 重启..."
-            sleep 3
-            $USE_SUDO shutdown -r now
-            ;;
-        *)
-            log_info "请稍后手动重启系统"
-            log_info "推荐使用: sudo systemctl reboot"
-            log_warning "重要：重启前请确保SSH服务正常运行"
-            ;;
-    esac
-}
-
-# 修改主升级逻辑
+# 主升级逻辑
 main_upgrade() {
     local current_version=$(get_current_version)
     local version_info=$(get_version_info "$current_version")
@@ -572,6 +767,9 @@ main_upgrade() {
     
     log_info "🎯 准备升级到: Debian $next_version ($next_codename) [$next_status]"
     
+    # 保存网络配置
+    local backup_dir=$(save_network_config)
+    
     # 风险提示
     if [[ "$next_status" == "testing" || "$next_status" == "unstable" ]]; then
         echo
@@ -580,15 +778,15 @@ main_upgrade() {
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         echo
         echo "📋 版本信息："
-        echo "    • 目标版本: Debian $next_version ($next_codename)"
-        echo "    • 版本状态: $next_status"
-        echo "    • 稳定性: 非稳定版本"
+        echo "   • 目标版本: Debian $next_version ($next_codename)"
+        echo "   • 版本状态: $next_status"
+        echo "   • 稳定性: 非稳定版本"
         echo
         echo "⚠️  风险说明："
-        echo "    • 可能包含未修复的bug和不稳定的功能"
-        echo "    • 软件包可能不完整或存在兼容性问题"
-        echo "    • 不建议在生产环境中使用"
-        echo "    • 升级过程可能失败或导致系统不稳定"
+        echo "   • 可能包含未修复的bug和不稳定的功能"
+        echo "   • 软件包可能不完整或存在兼容性问题"
+        echo "   • 不建议在生产环境中使用"
+        echo "   • 升级过程可能失败或导致系统不稳定"
         echo
         
         if [[ "${FORCE:-}" == "1" ]]; then
@@ -607,8 +805,8 @@ main_upgrade() {
         # 稳定版本的常规确认
         echo
         log_info "🎯 升级到稳定版本："
-        log_info "    从: Debian $current_version ($current_codename) [$current_status]"
-        log_info "    到: Debian $next_version ($next_codename) [$next_status]"
+        log_info "   从: Debian $current_version ($current_codename) [$current_status]"
+        log_info "   到: Debian $next_version ($next_codename) [$next_status]"
         echo
         
         if [[ "${FORCE:-}" == "1" ]]; then
@@ -623,20 +821,12 @@ main_upgrade() {
         fi
     fi
     
+    # 升级前准备
+    pre_upgrade_preparation
+    
     log_info "🚀 开始升级过程..."
     
-    # 执行升级前修复
-    fix_pre_upgrade_issues "$current_version" "$next_version"
-    
-    # 备份重要配置
-    local backup_dir="/root/debian_upgrade_backup_$(date +%Y%m%d_%H%M%S)"
-    log_info "备份重要配置到: $backup_dir"
-    $USE_SUDO mkdir -p "$backup_dir"
-    $USE_SUDO cp -r /etc/apt/sources.list* "$backup_dir/" 2>/dev/null || true
-    $USE_SUDO cp -r /etc/network "$backup_dir/" 2>/dev/null || true
-    $USE_SUDO cp -r /etc/ssh "$backup_dir/" 2>/dev/null || true
-    
-    # 简化的升级步骤
+    # 步骤1: 更新软件源配置
     log_info "步骤1: 更新软件源配置"
     
     # 备份sources.list
@@ -720,12 +910,8 @@ EOF
         exit 1
     }
     
-    log_info "步骤4: 清理系统"
-    $USE_SUDO apt-get autoremove -y --purge 2>/dev/null || true
-    $USE_SUDO apt-get autoclean 2>/dev/null || true
-    
-    # 执行升级后修复
-    post_upgrade_fixes "$next_version"
+    log_info "步骤4: 升级后修复"
+    post_upgrade_fixes "$backup_dir"
     
     # 验证升级结果
     sleep 3
@@ -737,9 +923,9 @@ EOF
         log_success "========================================="
         echo
         log_info "📝 重要提醒："
-        log_info "1. 🔄 需要重启系统以确保所有更改生效"
+        log_info "1. 🔄 建议重启系统以确保所有更改生效"
         log_info "2. 🔧 重启后可以再次运行此脚本继续升级到更新版本"
-        log_info "3. 🛡️  如遇问题，备份位置: $backup_dir"
+        log_info "3. 🛡️  配置备份位置: $backup_dir"
         
         # 检查是否还有更高版本可升级
         local further_version=$(get_next_version "$next_version")
@@ -758,8 +944,17 @@ EOF
         fi
         
         echo
-        # 使用安全重启替代直接reboot
-        safe_reboot
+        if [[ "${FORCE:-}" == "1" ]]; then
+            log_info "强制模式已启用，建议手动重启系统"
+        else
+            read -p "是否现在重启系统? [y/N]: " -n 1 -r </dev/tty
+            echo
+            if [[ $REPLY =~ ^[Yy]$ ]]; then
+                safe_reboot
+            else
+                log_info "请稍后手动重启系统: sudo reboot"
+            fi
+        fi
     else
         log_error "升级验证失败，请检查系统状态"
         log_error "期望版本: Debian $next_version"
@@ -774,6 +969,12 @@ fix_only_mode() {
     log_info "🔧 仅执行系统修复模式"
     log_info "========================================="
     
+    # 检测系统环境
+    local boot_mode=$(detect_boot_mode)
+    local boot_disk=$(detect_boot_disk)
+    log_info "启动模式: $boot_mode"
+    log_info "引导磁盘: ${boot_disk:-未检测到}"
+    
     log_info "1/4: 清理APT锁定文件"
     $USE_SUDO rm -f /var/lib/dpkg/lock-frontend 2>/dev/null || true
     $USE_SUDO rm -f /var/lib/dpkg/lock 2>/dev/null || true
@@ -786,7 +987,17 @@ fix_only_mode() {
     log_info "3/4: 修复依赖关系"
     $USE_SUDO apt-get --fix-broken install -y 2>/dev/null || true
     
-    log_info "4/4: 更新软件包列表"
+    log_info "4/4: 修复系统关键组件"
+    # 修复GRUB
+    update_grub_safe
+    
+    # 修复网络
+    fix_network_config "/tmp"
+    
+    # 清理旧内核
+    clean_old_kernels
+    
+    # 更新软件包列表
     $USE_SUDO apt-get update || log_warning "软件包列表更新失败，但系统修复已完成"
     
     log_success "========================================="
@@ -826,18 +1037,6 @@ main() {
     # 设置错误处理
     trap 'error_recovery $?' ERR
     
-    # ** MODIFICATION START: Inline root check logic **
-    if [[ $EUID -eq 0 ]]; then
-        USE_SUDO=""
-    else
-        USE_SUDO="sudo"
-        if ! sudo -n true 2>/dev/null; then
-            log_info "需要sudo权限来执行脚本操作"
-            sudo -v || exit 1 # Exit if sudo validation fails
-        fi
-    fi
-    # ** MODIFICATION END **
-
     # 解析命令行参数
     while [[ $# -gt 0 ]]; do
         case $1 in
@@ -863,6 +1062,7 @@ main() {
                 shift
                 ;;
             --fix-only)
+                check_root
                 check_system
                 fix_only_mode
                 exit 0
@@ -891,6 +1091,7 @@ main() {
     done
     
     # 默认执行升级
+    check_root
     check_system
     main_upgrade
 }
