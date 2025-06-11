@@ -7,7 +7,7 @@
 set -e  # 遇到错误立即退出
 
 # 脚本版本
-SCRIPT_VERSION="2.3"
+SCRIPT_VERSION="2.4"
 
 # 颜色定义
 RED='\033[0;31m'
@@ -82,30 +82,66 @@ detect_boot_mode() {
 detect_boot_disk() {
     local boot_disk=""
     
-    # 方法1：从/boot分区查找
-    if mount | grep -q " /boot "; then
-        boot_disk=$(mount | grep " /boot " | awk '{print $1}' | sed 's/[0-9]*$//')
-    else
-        # 方法2：从根分区查找
-        boot_disk=$(mount | grep " / " | grep -v tmpfs | head -1 | awk '{print $1}' | sed 's/[0-9]*$//')
+    # 方法1：从当前GRUB配置获取
+    if [[ -f /boot/grub/grub.cfg ]]; then
+        local grub_disk=$(grep -o 'root=[^ ]*' /boot/grub/grub.cfg 2>/dev/null | head -1 | sed 's/root=//' | sed 's/[0-9]*$//' | sed 's/p[0-9]*$//')
+        if [[ -b "$grub_disk" ]]; then
+            echo "$grub_disk"
+            return
+        fi
     fi
     
-    # 清理设备名称（处理NVMe设备）
-    boot_disk=$(echo "$boot_disk" | sed 's/p[0-9]*$//')
+    # 方法2：从/boot分区查找
+    if mount | grep -q " /boot "; then
+        boot_disk=$(mount | grep " /boot " | awk '{print $1}' | sed 's/[0-9]*$//' | sed 's/p[0-9]*$//')
+        if [[ -b "$boot_disk" ]]; then
+            echo "$boot_disk"
+            return
+        fi
+    fi
     
-    # 验证设备存在
+    # 方法3：从根分区查找
+    boot_disk=$(mount | grep " / " | grep -v tmpfs | head -1 | awk '{print $1}' | sed 's/[0-9]*$//' | sed 's/p[0-9]*$//')
     if [[ -b "$boot_disk" ]]; then
         echo "$boot_disk"
-    else
-        # 尝试常见设备
-        for disk in /dev/sda /dev/vda /dev/xvda /dev/nvme0n1; do
-            if [[ -b "$disk" ]]; then
-                echo "$disk"
-                return
-            fi
-        done
-        echo ""
+        return
     fi
+    
+    # 方法4：从系统引导参数获取
+    if [[ -f /proc/cmdline ]]; then
+        local root_dev=$(cat /proc/cmdline | grep -o 'root=[^ ]*' | sed 's/root=//')
+        if [[ "$root_dev" =~ ^UUID= ]]; then
+            # 如果是UUID，转换为设备名
+            local uuid=$(echo "$root_dev" | sed 's/UUID=//')
+            boot_disk=$(blkid -U "$uuid" 2>/dev/null | sed 's/[0-9]*$//' | sed 's/p[0-9]*$//')
+        else
+            boot_disk=$(echo "$root_dev" | sed 's/[0-9]*$//' | sed 's/p[0-9]*$//')
+        fi
+        if [[ -b "$boot_disk" ]]; then
+            echo "$boot_disk"
+            return
+        fi
+    fi
+    
+    # 方法5：智能检测第一个可用磁盘
+    for disk in $(lsblk -d -n -o NAME,TYPE | grep disk | awk '{print "/dev/"$1}'); do
+        # 检查磁盘是否有分区表
+        if $USE_SUDO fdisk -l "$disk" 2>/dev/null | grep -q "Disklabel type"; then
+            echo "$disk"
+            return
+        fi
+    done
+    
+    # 方法6：尝试常见设备
+    for disk in /dev/sda /dev/vda /dev/xvda /dev/nvme0n1; do
+        if [[ -b "$disk" ]]; then
+            echo "$disk"
+            return
+        fi
+    done
+    
+    # 如果都失败了，返回空
+    echo ""
 }
 
 # 保存网络配置
@@ -208,44 +244,82 @@ update_grub_safe() {
     local boot_mode=$(detect_boot_mode)
     local boot_disk=$(detect_boot_disk)
     
-    log_debug "更新GRUB配置 (启动模式: $boot_mode)"
+    log_info "更新GRUB配置 (启动模式: $boot_mode)"
+    
+    # 首先更新GRUB配置
+    if ! $USE_SUDO update-grub 2>/dev/null; then
+        log_warning "update-grub失败，尝试修复"
+    fi
     
     if [[ "$boot_mode" == "uefi" ]]; then
         # UEFI模式
-        log_debug "检测到UEFI启动模式"
+        log_info "UEFI模式：安装grub-efi-amd64"
         
-        # 确保安装正确的GRUB包
-        if ! dpkg -l | grep -q "^ii.*grub-efi-amd64"; then
-            log_info "安装 grub-efi-amd64"
-            DEBIAN_FRONTEND=noninteractive $USE_SUDO apt-get install -y grub-efi-amd64 2>/dev/null || true
+        # 确保EFI相关包已安装
+        DEBIAN_FRONTEND=noninteractive $USE_SUDO apt-get install -y \
+            grub-efi-amd64 grub-efi-amd64-bin efibootmgr 2>/dev/null || true
+        
+        # 查找EFI分区
+        local efi_partition=""
+        if [[ -d /boot/efi ]]; then
+            efi_partition=$(df /boot/efi | tail -1 | awk '{print $1}')
+        elif [[ -d /efi ]]; then
+            efi_partition=$(df /efi | tail -1 | awk '{print $1}')
         fi
         
-        # 更新GRUB配置
-        $USE_SUDO update-grub 2>/dev/null || true
-        
-        # 重新安装到EFI分区
-        if [[ -d /boot/efi ]]; then
-            $USE_SUDO grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=debian 2>/dev/null || true
+        if [[ -n "$efi_partition" ]]; then
+            log_info "找到EFI分区: $efi_partition"
+            # 重新安装GRUB到EFI
+            $USE_SUDO grub-install --target=x86_64-efi --efi-directory=/boot/efi \
+                --bootloader-id=debian --recheck --no-floppy 2>/dev/null || {
+                log_warning "GRUB EFI安装失败，尝试修复"
+                # 尝试修复EFI引导
+                $USE_SUDO efibootmgr -v 2>/dev/null || true
+            }
+        else
+            log_warning "未找到EFI分区，跳过GRUB安装"
         fi
     else
         # BIOS模式
-        log_debug "检测到BIOS启动模式"
+        log_info "BIOS模式：安装grub-pc"
         
-        # 确保安装正确的GRUB包
-        if ! dpkg -l | grep -q "^ii.*grub-pc"; then
-            log_info "安装 grub-pc"
-            DEBIAN_FRONTEND=noninteractive $USE_SUDO apt-get install -y grub-pc 2>/dev/null || true
-        fi
+        # 确保grub-pc已安装
+        DEBIAN_FRONTEND=noninteractive $USE_SUDO apt-get install -y grub-pc 2>/dev/null || true
         
-        # 更新GRUB配置
-        $USE_SUDO update-grub 2>/dev/null || true
-        
-        # 重新安装到引导磁盘
         if [[ -n "$boot_disk" ]]; then
-            log_debug "安装GRUB到 $boot_disk"
-            $USE_SUDO grub-install "$boot_disk" 2>/dev/null || true
+            log_info "安装GRUB到: $boot_disk"
+            
+            # 使用更安全的方式安装GRUB
+            # 先尝试非交互式安装
+            DEBIAN_FRONTEND=noninteractive $USE_SUDO grub-install \
+                --recheck --no-floppy "$boot_disk" 2>/dev/null || {
+                
+                log_warning "GRUB安装失败，尝试使用dpkg-reconfigure"
+                
+                # 设置debconf选项来自动选择磁盘
+                echo "grub-pc grub-pc/install_devices multiselect $boot_disk" | \
+                    $USE_SUDO debconf-set-selections
+                
+                # 重新配置grub-pc
+                DEBIAN_FRONTEND=noninteractive $USE_SUDO dpkg-reconfigure grub-pc 2>/dev/null || {
+                    log_error "GRUB安装失败！系统可能无法启动"
+                    log_info "建议手动运行: sudo grub-install $boot_disk"
+                }
+            }
+        else
+            log_error "未检测到引导磁盘！"
+            log_info "请手动指定引导磁盘并运行: sudo grub-install /dev/sdX"
+            
+            # 列出可用磁盘供用户参考
+            log_info "可用磁盘列表："
+            lsblk -d -n -o NAME,SIZE,TYPE | grep disk | while read line; do
+                echo "  - /dev/$line"
+            done
         fi
     fi
+    
+    # 再次更新GRUB配置确保一致性
+    $USE_SUDO update-grub 2>/dev/null || true
 }
 
 # 检查系统环境
@@ -451,6 +525,35 @@ pre_upgrade_preparation() {
     log_debug "更新软件包数据库"
     $USE_SUDO apt-get update || log_warning "软件包列表更新失败，继续升级"
     
+    # GRUB预检查
+    log_info "检查GRUB状态"
+    local boot_mode=$(detect_boot_mode)
+    local boot_disk=$(detect_boot_disk)
+    
+    if [[ -z "$boot_disk" ]]; then
+        log_warning "⚠️  警告：未能自动检测到引导磁盘"
+        log_warning "升级后可能需要手动修复GRUB"
+        
+        # 提供磁盘列表供参考
+        echo
+        echo "可用磁盘列表："
+        lsblk -d -n -o NAME,SIZE,TYPE | grep disk | while read line; do
+            echo "  /dev/$line"
+        done
+        echo
+        
+        if [[ "${FORCE:-}" != "1" ]]; then
+            read -p "是否继续升级？建议先确认引导磁盘 [y/N]: " -n 1 -r </dev/tty
+            echo
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                log_info "升级已取消。建议先运行 $0 --fix-only 修复系统"
+                exit 1
+            fi
+        fi
+    else
+        log_success "检测到引导磁盘: $boot_disk (模式: $boot_mode)"
+    fi
+    
     log_success "升级前准备工作完成"
 }
 
@@ -465,10 +568,38 @@ post_upgrade_fixes() {
     
     # 更新initramfs
     log_info "更新initramfs"
-    $USE_SUDO update-initramfs -u -k all 2>/dev/null || true
+    $USE_SUDO update-initramfs -u -k all 2>/dev/null || {
+        log_warning "initramfs更新失败，尝试修复"
+        # 如果失败，尝试只更新当前内核
+        $USE_SUDO update-initramfs -u -k $(uname -r) 2>/dev/null || true
+    }
     
-    # 更新GRUB
+    # 更新GRUB（关键步骤）
+    log_info "更新GRUB引导程序（关键步骤）"
     update_grub_safe
+    
+    # 验证GRUB安装
+    log_info "验证GRUB安装状态"
+    local boot_mode=$(detect_boot_mode)
+    if [[ "$boot_mode" == "uefi" ]]; then
+        if ! efibootmgr 2>/dev/null | grep -q "debian"; then
+            log_warning "未检测到debian EFI引导项，可能需要手动修复"
+            log_info "建议运行: sudo grub-install --target=x86_64-efi --efi-directory=/boot/efi"
+        else
+            log_success "EFI引导项检查通过"
+        fi
+    else
+        # BIOS模式验证较困难，仅检查GRUB文件是否存在
+        if [[ ! -f /boot/grub/grub.cfg ]]; then
+            log_warning "未找到GRUB配置文件，可能需要手动修复"
+            local boot_disk=$(detect_boot_disk)
+            if [[ -n "$boot_disk" ]]; then
+                log_info "建议运行: sudo grub-install $boot_disk && sudo update-grub"
+            fi
+        else
+            log_success "GRUB配置文件存在"
+        fi
+    fi
     
     # 清理残留配置
     log_info "清理残留配置"
@@ -543,6 +674,7 @@ Debian自动逐级升级脚本 v$SCRIPT_VERSION
   -c, --check         检查是否有可用升级
   -d, --debug         启用调试模式
   --fix-only          仅执行系统修复，不进行升级
+  --fix-grub          专门修复GRUB引导问题
   --force             强制执行升级（跳过确认）
   --stable-only       仅升级到稳定版本，跳过测试版本
   --allow-testing     允许升级到测试版本（默认行为）
@@ -557,6 +689,7 @@ Debian自动逐级升级脚本 v$SCRIPT_VERSION
   ✅ /boot分区空间自动清理
   ✅ 完整的配置备份和恢复
   ✅ 安全的重启机制
+  ✅ 专门的GRUB修复功能
 
 🔄 支持的升级路径:
   • Debian 8 (Jessie) → 9 (Stretch) → 10 (Buster)
@@ -568,6 +701,7 @@ Debian自动逐级升级脚本 v$SCRIPT_VERSION
   $0 --check            # 检查可用升级
   $0 --version          # 显示版本信息
   $0 --fix-only         # 仅修复系统问题
+  $0 --fix-grub         # 专门修复GRUB引导
   $0 --debug            # 启用调试模式
   $0 --stable-only      # 仅升级到稳定版本
   $0 --force            # 强制升级（跳过确认）
@@ -917,6 +1051,7 @@ EOF
         log_info "1. 🔄 建议重启系统以确保所有更改生效"
         log_info "2. 🔧 重启后可以再次运行此脚本继续升级到更新版本"
         log_info "3. 🛡️  配置备份位置: $backup_dir"
+        log_info "4. ⚠️  如果重启失败，使用 $0 --fix-grub 修复引导"
         
         # 检查是否还有更高版本可升级
         local further_version=$(get_next_version "$next_version")
@@ -954,6 +1089,145 @@ EOF
     fi
 }
 
+# GRUB专门修复模式
+fix_grub_mode() {
+    log_info "========================================="
+    log_info "🔧 GRUB引导修复模式"
+    log_info "========================================="
+    
+    # 检测系统环境
+    local boot_mode=$(detect_boot_mode)
+    local boot_disk=$(detect_boot_disk)
+    
+    log_info "系统信息："
+    log_info "- 启动模式: $boot_mode"
+    log_info "- 检测到的引导磁盘: ${boot_disk:-未自动检测到}"
+    echo
+    
+    # 如果未检测到磁盘，让用户选择
+    if [[ -z "$boot_disk" ]]; then
+        log_warning "未能自动检测到引导磁盘"
+        echo
+        echo "可用磁盘列表："
+        local disk_list=()
+        while IFS= read -r line; do
+            disk_list+=("$line")
+            echo "  $((${#disk_list[@]})). $line"
+        done < <(lsblk -d -n -o NAME,SIZE,TYPE | grep disk | awk '{print "/dev/"$1" - "$2}')
+        
+        echo
+        read -p "请选择引导磁盘编号 (1-${#disk_list[@]}), 或按回车跳过: " -r </dev/tty
+        
+        if [[ -n "$REPLY" ]] && [[ "$REPLY" =~ ^[0-9]+$ ]] && [[ "$REPLY" -ge 1 ]] && [[ "$REPLY" -le "${#disk_list[@]}" ]]; then
+            boot_disk=$(echo "${disk_list[$((REPLY-1))]}" | awk '{print $1}')
+            log_info "选择的引导磁盘: $boot_disk"
+        else
+            log_warning "跳过磁盘选择"
+        fi
+    fi
+    
+    # 步骤1：重新安装GRUB包
+    log_info "步骤1: 重新安装GRUB包"
+    if [[ "$boot_mode" == "uefi" ]]; then
+        DEBIAN_FRONTEND=noninteractive $USE_SUDO apt-get install --reinstall -y \
+            grub-efi-amd64 grub-efi-amd64-bin grub-efi-amd64-signed \
+            grub2-common grub-common efibootmgr 2>/dev/null || {
+            log_error "GRUB EFI包安装失败"
+        }
+    else
+        DEBIAN_FRONTEND=noninteractive $USE_SUDO apt-get install --reinstall -y \
+            grub-pc grub-pc-bin grub2-common grub-common 2>/dev/null || {
+            log_error "GRUB PC包安装失败"
+        }
+    fi
+    
+    # 步骤2：生成新的GRUB配置
+    log_info "步骤2: 生成GRUB配置"
+    $USE_SUDO grub-mkconfig -o /boot/grub/grub.cfg 2>/dev/null || {
+        log_warning "grub-mkconfig失败，尝试update-grub"
+        $USE_SUDO update-grub 2>/dev/null || true
+    }
+    
+    # 步骤3：安装GRUB到磁盘
+    if [[ -n "$boot_disk" ]]; then
+        log_info "步骤3: 安装GRUB到 $boot_disk"
+        
+        if [[ "$boot_mode" == "uefi" ]]; then
+            # EFI模式安装
+            local efi_dir="/boot/efi"
+            if [[ ! -d "$efi_dir" ]] && [[ -d "/efi" ]]; then
+                efi_dir="/efi"
+            fi
+            
+            log_info "EFI目录: $efi_dir"
+            $USE_SUDO grub-install --target=x86_64-efi \
+                --efi-directory="$efi_dir" \
+                --bootloader-id=debian \
+                --recheck \
+                --no-floppy \
+                --force 2>&1 | tee /tmp/grub_install.log
+                
+            # 检查安装结果
+            if grep -q "Installation finished. No error reported" /tmp/grub_install.log; then
+                log_success "GRUB EFI安装成功"
+                
+                # 显示EFI引导项
+                log_info "当前EFI引导项："
+                $USE_SUDO efibootmgr -v 2>/dev/null || true
+            else
+                log_error "GRUB EFI安装可能失败，请检查日志"
+                cat /tmp/grub_install.log
+            fi
+        else
+            # BIOS模式安装
+            $USE_SUDO grub-install --target=i386-pc \
+                --recheck \
+                --no-floppy \
+                --force \
+                "$boot_disk" 2>&1 | tee /tmp/grub_install.log
+                
+            # 检查安装结果
+            if grep -q "Installation finished. No error reported" /tmp/grub_install.log; then
+                log_success "GRUB BIOS安装成功"
+            else
+                log_error "GRUB BIOS安装可能失败，请检查日志"
+                cat /tmp/grub_install.log
+            fi
+        fi
+        
+        rm -f /tmp/grub_install.log
+    else
+        log_warning "跳过GRUB安装（未指定磁盘）"
+    fi
+    
+    # 步骤4：最终更新GRUB配置
+    log_info "步骤4: 最终更新GRUB配置"
+    $USE_SUDO update-grub 2>/dev/null || true
+    
+    # 步骤5：验证
+    log_info "步骤5: 验证GRUB安装"
+    if [[ -f /boot/grub/grub.cfg ]]; then
+        log_success "GRUB配置文件存在"
+        local kernel_count=$(grep -c "menuentry " /boot/grub/grub.cfg 2>/dev/null || echo "0")
+        log_info "检测到 $kernel_count 个启动项"
+    else
+        log_error "GRUB配置文件不存在！"
+    fi
+    
+    log_success "========================================="
+    log_success "🎉 GRUB修复完成"
+    log_success "========================================="
+    
+    echo
+    log_info "建议："
+    log_info "1. 重启前再次运行: sudo update-grub"
+    log_info "2. 如果仍有问题，可以尝试救援模式或Live CD修复"
+    if [[ "$boot_mode" == "uefi" ]]; then
+        log_info "3. EFI系统可检查: sudo efibootmgr -v"
+    fi
+    log_info "4. 重启系统测试: sudo reboot"
+}
+
 # 系统修复模式
 fix_only_mode() {
     log_info "========================================="
@@ -966,19 +1240,30 @@ fix_only_mode() {
     log_info "启动模式: $boot_mode"
     log_info "引导磁盘: ${boot_disk:-未检测到}"
     
-    log_info "1/4: 清理APT锁定文件"
+    log_info "1/5: 清理APT锁定文件"
     $USE_SUDO rm -f /var/lib/dpkg/lock-frontend 2>/dev/null || true
     $USE_SUDO rm -f /var/lib/dpkg/lock 2>/dev/null || true
     $USE_SUDO rm -f /var/cache/apt/archives/lock 2>/dev/null || true
     $USE_SUDO rm -f /var/lib/apt/lists/lock 2>/dev/null || true
     
-    log_info "2/4: 修复dpkg状态"
+    log_info "2/5: 修复dpkg状态"
     $USE_SUDO dpkg --configure -a 2>/dev/null || true
     
-    log_info "3/4: 修复依赖关系"
+    log_info "3/5: 修复依赖关系"
     $USE_SUDO apt-get --fix-broken install -y 2>/dev/null || true
     
-    log_info "4/4: 修复系统关键组件"
+    log_info "4/5: 修复GRUB引导程序"
+    # 重新安装GRUB相关包
+    if [[ "$boot_mode" == "uefi" ]]; then
+        log_info "重新安装GRUB EFI包"
+        DEBIAN_FRONTEND=noninteractive $USE_SUDO apt-get install --reinstall -y \
+            grub-efi-amd64 grub-efi-amd64-bin efibootmgr 2>/dev/null || true
+    else
+        log_info "重新安装GRUB PC包"
+        DEBIAN_FRONTEND=noninteractive $USE_SUDO apt-get install --reinstall -y \
+            grub-pc grub-pc-bin 2>/dev/null || true
+    fi
+    
     # 修复GRUB
     update_grub_safe
     
@@ -988,12 +1273,33 @@ fix_only_mode() {
     # 清理旧内核
     clean_old_kernels
     
-    # 更新软件包列表
+    log_info "5/5: 更新软件包列表"
     $USE_SUDO apt-get update || log_warning "软件包列表更新失败，但系统修复已完成"
     
     log_success "========================================="
     log_success "🎉 系统修复完成"
     log_success "========================================="
+    
+    # 给出GRUB修复建议
+    if [[ "$boot_mode" == "uefi" ]]; then
+        log_info "EFI系统GRUB修复建议："
+        log_info "1. 确认EFI分区挂载: mount | grep efi"
+        log_info "2. 重装GRUB: sudo grub-install --target=x86_64-efi --efi-directory=/boot/efi"
+        log_info "3. 更新配置: sudo update-grub"
+        log_info "4. 检查引导项: sudo efibootmgr -v"
+    else
+        if [[ -n "$boot_disk" ]]; then
+            log_info "BIOS系统GRUB修复建议："
+            log_info "1. 重装GRUB: sudo grub-install $boot_disk"
+            log_info "2. 更新配置: sudo update-grub"
+            log_info "3. 验证安装: sudo grub-install --recheck $boot_disk"
+        else
+            log_warning "未检测到引导磁盘，请手动指定磁盘安装GRUB"
+            log_info "示例: sudo grub-install /dev/sda"
+        fi
+    fi
+    
+    echo
     log_info "系统已优化，现在可以尝试运行正常升级"
     log_info "建议执行: $0 --check 检查升级状态"
 }
@@ -1056,6 +1362,11 @@ main() {
                 check_root
                 check_system
                 fix_only_mode
+                exit 0
+                ;;
+            --fix-grub)
+                check_root
+                fix_grub_mode
                 exit 0
                 ;;
             --force)
