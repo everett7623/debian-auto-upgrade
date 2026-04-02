@@ -31,6 +31,7 @@
 | Debian 10 (Buster) | Debian 11 (Bullseye) | ✅ 支持 | 🔒 安全 | 稳定升级 |
 | Debian 11 (Bullseye) | Debian 12 (Bookworm) | ✅ 支持 | 🔒 安全 | 当前推荐 |
 | Debian 12 (Bookworm) | Debian 13 (Trixie) | ⚠️ 测试版 | 🧪 谨慎 | 需明确确认，不建议生产环境 |
+| Debian 13 (Trixie) | Debian 14 (Forky) | ⚠️ 测试版 | 🧪 谨慎 | 需明确确认，不建议生产环境 |
 
 > **建议：** 生产系统请保持 Debian 12 (Bookworm)，这是当前稳定版。
 
