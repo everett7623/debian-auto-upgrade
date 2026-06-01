@@ -6,7 +6,7 @@
 [![GitHub release](https://img.shields.io/github/release/everett7623/debian-auto-upgrade.svg)](https://github.com/everett7623/debian-auto-upgrade/releases)
 [![Debian](https://img.shields.io/badge/Debian-8%2B-red.svg)](https://www.debian.org/)
 [![Bash](https://img.shields.io/badge/Language-Bash-green.svg)](https://www.gnu.org/software/bash/)
-[![Version](https://img.shields.io/badge/Version-3.0-brightgreen.svg)](https://github.com/everett7623/debian-auto-upgrade/releases)
+[![Version](https://img.shields.io/badge/Version-3.2-brightgreen.svg)](https://github.com/everett7623/debian-auto-upgrade/releases)
 
 专为 Debian 系统打造的自动化升级脚本，支持从旧版本安全逐级升级到最新稳定版本。针对 VPS 环境深度优化，具备完善的错误恢复与容错能力。
 
@@ -29,11 +29,11 @@
 | Debian 8 (Jessie) | Debian 9 (Stretch) | ✅ 支持 | 🔒 安全 | 旧版升级 |
 | Debian 9 (Stretch) | Debian 10 (Buster) | ✅ 支持 | 🔒 安全 | 旧版升级 |
 | Debian 10 (Buster) | Debian 11 (Bullseye) | ✅ 支持 | 🔒 安全 | 稳定升级 |
-| Debian 11 (Bullseye) | Debian 12 (Bookworm) | ✅ 支持 | 🔒 安全 | 当前推荐 |
-| Debian 12 (Bookworm) | Debian 13 (Trixie) | ⚠️ 测试版 | 🧪 谨慎 | 需明确确认，不建议生产环境 |
-| Debian 13 (Trixie) | Debian 14 (Forky) | ⚠️ 测试版 | 🧪 谨慎 | 需明确确认，不建议生产环境 |
+| Debian 11 (Bullseye) | Debian 12 (Bookworm) | ✅ 支持 | 🔒 安全 | 稳定升级 |
+| Debian 12 (Bookworm) | Debian 13 (Trixie) | ✅ 支持 | 🔒 安全 | **当前推荐**，直接升级无需额外参数 |
+| Debian 13 (Trixie) | Debian 14 (Forky) | ⚠️ 测试版 | 🧪 谨慎 | 需 `--allow-testing`，不建议生产环境 |
 
-> **建议：** 生产系统请保持 Debian 12 (Bookworm)，这是当前稳定版。
+> **建议：** 生产系统请升级到 Debian 13 (Trixie)，这是当前稳定版（2025-08-09 发布，支持至 2030 年）。
 
 ## 🚀 快速开始
 
@@ -51,8 +51,8 @@ wget -O debian_upgrade.sh https://raw.githubusercontent.com/everett7623/debian-a
 # 检查当前版本与可用升级
 sudo ./debian_upgrade.sh --check
 
-# 仅升级到稳定版（推荐）
-sudo ./debian_upgrade.sh --stable-only
+# 升级到最新稳定版（推荐）
+sudo ./debian_upgrade.sh
 
 # 使用国内镜像源升级（国内 VPS 推荐）
 sudo ./debian_upgrade.sh --mirror cn
@@ -76,7 +76,7 @@ sudo ./debian_upgrade.sh --help
 | `--fix-grub` | 专项修复 GRUB 引导问题 |
 | `--force` | 跳过所有确认提示（慎用） |
 | `--stable-only` | 仅升级到稳定版（默认，推荐） |
-| `--allow-testing` | 允许升级到测试版 |
+| `--allow-testing` | 允许升级到 Debian 14 Forky（testing） |
 | `--mirror <cn\|tuna\|ustc>` | 使用指定国内镜像源 |
 
 ## 💡 使用示例
@@ -87,17 +87,17 @@ sudo ./debian_upgrade.sh --help
 # 检查状态，不执行升级
 sudo ./debian_upgrade.sh --check
 
-# 安全升级到下一稳定版
-sudo ./debian_upgrade.sh --stable-only
+# 升级到 Debian 13 Trixie（当前稳定版）
+sudo ./debian_upgrade.sh
 
 # 国内服务器使用阿里云源
-sudo ./debian_upgrade.sh --stable-only --mirror cn
+sudo ./debian_upgrade.sh --mirror cn
 ```
 
 ### 开发 / 测试环境
 
 ```bash
-# 允许升级到测试版（需手动输入 YES 确认）
+# 允许升级到 Forky 测试版（需手动输入 YES 确认）
 sudo ./debian_upgrade.sh --allow-testing
 
 # 自动化场景强制升级（极度谨慎）
@@ -128,14 +128,14 @@ sudo ./debian_upgrade.sh --fix-grub
 | `ustc` | 中科大 mirrors.ustc.edu.cn | 教育网备选 |
 | _(不填)_ | Debian 官方 deb.debian.org | 境外服务器 |
 
-## 🔧 APT 源自动清理（v3.0 新增）
+## 🔧 APT 源自动清理
 
-升级前脚本会自动处理以下问题，解决截图中常见的 **404 报错**：
+升级前脚本会自动处理以下问题，解决常见的 **404 报错**：
 
 - 自动备份并禁用 `/etc/apt/sources.list.d/` 下的旧版 backports 源
 - 注释掉 `sources.list` 中遗留的 backports 行
 - `apt-get update` 失败时二次兜底：禁用所有第三方源后重试
-- 写入新版 `sources.list` 时自动适配各版本格式差异（Debian 11 的安全源格式、Debian 12 的 `non-free-firmware`）
+- 写入新版 `sources.list` 时自动适配各版本格式差异（Debian 11 的安全源格式、Debian 12+ 的 `non-free-firmware`）
 
 ## 📦 升级策略
 
@@ -178,8 +178,15 @@ sudo ./debian_upgrade.sh --fix-grub
 
 ### Debian 12 用户须知
 
-- ✅ 当前为最新稳定版，**建议保持不升级**
-- ⚠️ 升级到 Debian 13 即进入 testing 分支，存在不稳定风险
+- ✅ Debian 13 (Trixie) 已于 2025-08-09 正式发布，**推荐升级**
+- 🚀 直接运行脚本即可升级，无需额外参数
+- 🛡️ Debian 12 仍在安全支持期，暂不升级也没问题
+- ⏳ Debian 12 支持周期至 2026 年，建议提前规划升级
+
+### Debian 13 用户须知
+
+- ✅ 已是当前稳定版，**建议保持**
+- ⚠️ 升级到 Debian 14 (Forky) 即进入 testing 分支，存在不稳定风险
 - 🛡️ 使用 `--stable-only`（默认）可防止误升级到测试版
 - 💡 测试版升级需手动输入 `YES` 进行二次确认
 
@@ -196,7 +203,7 @@ sudo ./debian_upgrade.sh --fix-grub
 
 ### ❓ apt-get update 报 404 错误
 
-这是最常见的问题，原因是旧版 backports 或第三方源在升级后失效。v3.0 已自动处理，若仍出现：
+这是最常见的问题，原因是旧版 backports 或第三方源在升级后失效。脚本已自动处理，若仍出现：
 
 ```bash
 # 手动禁用所有第三方源后重试
@@ -287,12 +294,14 @@ systemctl restart networking
 
 ⭐ **如果这个项目对你有帮助，欢迎点个 Star！** ⭐
 
-🛡️ **提示：** Debian 12 (Bookworm) 是当前稳定版，生产环境建议保持使用
+🛡️ **提示：** Debian 13 (Trixie) 是当前稳定版（2025-08-09 发布），推荐生产环境升级
 
 ## 📚 版本历史
 
 | 版本 | 日期 | 主要变更 |
 |------|------|----------|
+| **v3.2** | 2026-06-01 | 更新 Debian 13 Trixie 为正式稳定版：12→13 直接升级无需 `--allow-testing`，13→14 (Forky) 需 `--allow-testing`，同步更新 README |
+| **v3.1** | 2026-06-01 | 修复 Debian 12 已是最新稳定版时升级提示不显示的 bug |
 | **v3.0** | 2026-04-02 | 全面重构：统一错误处理、自动清理旧 APT 源（修复 404）、GRUB 检测逻辑优化、磁盘空间预检、新增 `--mirror` 国内源支持 |
 | **v2.6** | 2024-12-01 | 修复 GRUB 过度修复问题，改进重启确认机制 |
 | **v2.5** | 2024-11-01 | 新增网络配置备份恢复，旧内核自动清理 |
