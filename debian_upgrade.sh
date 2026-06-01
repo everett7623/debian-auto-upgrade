@@ -25,6 +25,12 @@
 #                     - main_upgrade() 中提示逻辑判断取反导致提示从不显示
 #                     - 更新 Debian 13 (Trixie) 状态标注为 testing/freeze
 #                     - 更新 --help 中升级路径说明
+#   v3.2  2026-06-01  更新 Debian 13 (Trixie) 为当前正式稳定版（2025-08-09 发布）
+#                     - get_version_info: Trixie 状态从 testing/freeze 改为 stable
+#                     - get_next_version: Debian 12 → 13 不再需要 --allow-testing
+#                     - get_next_version: Debian 13 → 14 需要 --allow-testing（forky 为 unstable）
+#                     - 最新点版本 13.5（2026-05-16），支持周期至 2030 年
+#                     - 更新 --help 升级路径说明
 # =============================================================================
 # 使用方法:
 #   chmod +x debian_upgrade.sh
@@ -38,14 +44,14 @@
 #   - 需要 root 或 sudo 权限
 #   - VPS 用户请确保有 VNC/控制台访问，以防重启后 SSH 断开
 #   - 升级前建议快照或备份重要数据
-#   - Debian 12 为当前稳定版，生产环境推荐保持
-#   - Debian 13 (Trixie) 处于 testing/freeze 阶段，接近正式发布
+#   - Debian 13 (Trixie) 于 2025-08-09 正式发布为 stable，当前最新为 13.5
+#   - Debian 12 (Bookworm) 已进入 oldstable，仍在安全支持期内
 # =============================================================================
 
 set -e
 
 # ── 脚本元信息 ────────────────────────────────────────────────────────────────
-SCRIPT_VERSION="3.1"
+SCRIPT_VERSION="3.2"
 SCRIPT_NAME="debian_upgrade.sh"
 SCRIPT_DATE="2026-06-01"
 
@@ -172,9 +178,9 @@ get_version_info() {
         "9")  echo "stretch|oldoldstable" ;;
         "10") echo "buster|oldstable" ;;
         "11") echo "bullseye|oldstable" ;;
-        "12") echo "bookworm|stable" ;;
-        "13") echo "trixie|testing/freeze" ;;   # v3.1: 更新状态，Trixie 已进入 freeze
-        "14") echo "forky|unstable" ;;
+        "12") echo "bookworm|oldstable" ;;
+        "13") echo "trixie|stable" ;;           # v3.2: Trixie 正式 stable，2025-08-09 发布
+        "14") echo "forky|testing" ;;
         *)    echo "unknown|unknown" ;;
     esac
 }
@@ -185,8 +191,8 @@ get_next_version() {
         "9")  echo "10" ;;
         "10") echo "11" ;;
         "11") echo "12" ;;
-        "12") [[ "${STABLE_ONLY:-1}" == "1" ]] && echo "" || echo "13" ;;
-        "13") echo "14" ;;
+        "12") echo "13" ;;                                                          # v3.2: Trixie 已是 stable，直接升级
+        "13") [[ "${STABLE_ONLY:-1}" == "1" ]] && echo "" || echo "14" ;;          # v3.2: forky 为 testing，需 --allow-testing
         *)    echo "" ;;
     esac
 }
@@ -669,7 +675,7 @@ show_help() {
   --fix-grub            专门修复 GRUB 引导
   --force               跳过所有确认提示
   --stable-only         仅升级到稳定版（默认，跳过 testing）
-  --allow-testing       允许升级到 Debian 13 Trixie（testing/freeze）
+  --allow-testing       允许升级到 Debian 14 Forky（testing）
   --mirror <cn|tuna|ustc>  使用国内镜像源
 
 ✨ 功能特性:
@@ -683,24 +689,24 @@ show_help() {
 
 🔄 升级路径:
   Debian 8 (Jessie) → 9 (Stretch) → 10 (Buster)
-            → 11 (Bullseye) → 12 (Bookworm) [当前稳定版]
-            → 13 (Trixie)   [testing/freeze，接近正式发布，需 --allow-testing]
+            → 11 (Bullseye) → 12 (Bookworm) → 13 (Trixie) [当前稳定版，2025-08-09]
+            → 14 (Forky)    [testing，需 --allow-testing]
 
 💻 示例:
   $0                           # 自动升级到下一稳定版
   $0 --check                   # 检查升级状态
   $0 --mirror cn               # 使用阿里云源升级（推荐国内）
   $0 --stable-only             # 仅升级到稳定版（默认行为）
-  $0 --allow-testing           # 升级到 Debian 13 Trixie
-  $0 --allow-testing --force   # 强制升级到 Trixie，跳过确认
+  $0 --allow-testing           # 升级到 Debian 14 Forky（testing）
+  $0 --allow-testing --force   # 强制升级到 Forky，跳过确认
   $0 --fix-grub                # 修复引导问题
   $0 --debug                   # 调试模式
 
 ⚠️  注意:
   • VPS 用户请确保有 VNC / 控制台访问权限
   • 升级前请创建系统快照或数据备份
-  • Debian 12 (Bookworm) 为当前推荐稳定版
-  • Debian 13 (Trixie) 处于 testing/freeze，接近 GA，但非生产推荐
+  • Debian 13 (Trixie) 为当前推荐稳定版，支持至 2030 年
+  • Debian 14 (Forky) 处于 testing，不建议生产环境使用
 EOF
 }
 
@@ -720,7 +726,7 @@ check_upgrade() {
 
     if [[ -z "$nxt" ]]; then
         echo "  状    态: ✅ 已是最新稳定版本"
-        echo "  提    示: 可用 --allow-testing 升级到 Debian 13 (trixie)"
+        echo "  提    示: 可用 --allow-testing 升级到 Debian 14 (forky) [testing]"
     else
         nxt_info=$(get_version_info "$nxt")
         nxt_name=$(echo "$nxt_info" | cut -d'|' -f1)
@@ -777,7 +783,7 @@ check_upgrade() {
         fi
     else
         echo "  ✅ 当前为最新稳定版 (Debian $cur)"
-        echo "  🧪 如需升级到 Trixie: $0 --allow-testing"
+        echo "  🧪 如需升级到 Forky: $0 --allow-testing"
         echo "  🛡️  保持稳定版推荐:   $0 --stable-only (默认)"
     fi
 
@@ -802,10 +808,9 @@ main_upgrade() {
     log_info "Debian 自动升级脚本 v${SCRIPT_VERSION}"
     log_info "当前: Debian $cur ($cur_name) [$cur_stat]"
 
-    # ── v3.1 修复：STABLE_ONLY=1 时 nxt 为空，此处应始终显示提示 ──────────
     if [[ -z "$nxt" ]]; then
         log_success "🎉 已是最新稳定版本 Debian $cur"
-        log_info "提示: 可用 --allow-testing 升级到 Debian 13 (trixie) [testing/freeze]"
+        log_info "提示: 可用 --allow-testing 升级到 Debian 14 (forky) [testing]"
         exit 0
     fi
 
