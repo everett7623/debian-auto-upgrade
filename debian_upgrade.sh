@@ -21,10 +21,15 @@
 #                     - 改进 GRUB 检测逻辑，避免误判和过度写入
 #                     - 增加磁盘空间预检，不足时自动清理旧内核
 #                     - 完善帮助文档与使用示例
+#   v3.1  2026-06-01  修复 Debian 12 已是最新稳定版时提示信息不显示的 bug
+#                     - main_upgrade() 中提示逻辑判断取反导致提示从不显示
+#                     - 更新 Debian 13 (Trixie) 状态标注为 testing/freeze
+#                     - 更新 --help 中升级路径说明
 # =============================================================================
 # 使用方法:
 #   chmod +x debian_upgrade.sh
-#   sudo ./debian_upgrade.sh              # 正常升级
+#   sudo ./debian_upgrade.sh              # 正常升级（稳定版，默认）
+#   sudo ./debian_upgrade.sh --allow-testing  # 允许升级到 Debian 13 Trixie
 #   sudo ./debian_upgrade.sh --check      # 检查升级状态
 #   sudo ./debian_upgrade.sh --fix-grub   # 专门修复 GRUB
 #   sudo ./debian_upgrade.sh --help       # 查看完整帮助
@@ -34,14 +39,15 @@
 #   - VPS 用户请确保有 VNC/控制台访问，以防重启后 SSH 断开
 #   - 升级前建议快照或备份重要数据
 #   - Debian 12 为当前稳定版，生产环境推荐保持
+#   - Debian 13 (Trixie) 处于 testing/freeze 阶段，接近正式发布
 # =============================================================================
 
 set -e
 
 # ── 脚本元信息 ────────────────────────────────────────────────────────────────
-SCRIPT_VERSION="3.0"
+SCRIPT_VERSION="3.1"
 SCRIPT_NAME="debian_upgrade.sh"
-SCRIPT_DATE="2025-07-01"
+SCRIPT_DATE="2026-06-01"
 
 # ── 颜色定义 ──────────────────────────────────────────────────────────────────
 RED='\033[0;31m'
@@ -167,7 +173,7 @@ get_version_info() {
         "10") echo "buster|oldstable" ;;
         "11") echo "bullseye|oldstable" ;;
         "12") echo "bookworm|stable" ;;
-        "13") echo "trixie|testing" ;;
+        "13") echo "trixie|testing/freeze" ;;   # v3.1: 更新状态，Trixie 已进入 freeze
         "14") echo "forky|unstable" ;;
         *)    echo "unknown|unknown" ;;
     esac
@@ -663,12 +669,12 @@ show_help() {
   --fix-grub            专门修复 GRUB 引导
   --force               跳过所有确认提示
   --stable-only         仅升级到稳定版（默认，跳过 testing）
-  --allow-testing       允许升级到 testing 版本
+  --allow-testing       允许升级到 Debian 13 Trixie（testing/freeze）
   --mirror <cn|tuna|ustc>  使用国内镜像源
 
 ✨ 功能特性:
-  ✅ 自动检测并逐级升级 Debian 8 → 12
-  ✅ 升级前自动清理无效 backports / 第三方源 ← v2.7 新增
+  ✅ 自动检测并逐级升级 Debian 8 → 13
+  ✅ 升级前自动清理无效 backports / 第三方源
   ✅ 兼容 UEFI / BIOS，支持 NVMe、virtio、xen 磁盘
   ✅ 网络接口名称变化自动修复
   ✅ /boot 空间不足时自动清理旧内核
@@ -678,21 +684,23 @@ show_help() {
 🔄 升级路径:
   Debian 8 (Jessie) → 9 (Stretch) → 10 (Buster)
             → 11 (Bullseye) → 12 (Bookworm) [当前稳定版]
-            → 13 (Trixie)   [测试版，需 --allow-testing]
+            → 13 (Trixie)   [testing/freeze，接近正式发布，需 --allow-testing]
 
 💻 示例:
-  $0                         # 自动升级到下一版本
-  $0 --check                 # 检查升级状态
-  $0 --mirror cn             # 使用阿里云源升级（推荐国内）
-  $0 --stable-only           # 仅升级到稳定版
-  $0 --allow-testing --force # 强制升级到 trixie
-  $0 --fix-grub              # 修复引导问题
-  $0 --debug                 # 调试模式
+  $0                           # 自动升级到下一稳定版
+  $0 --check                   # 检查升级状态
+  $0 --mirror cn               # 使用阿里云源升级（推荐国内）
+  $0 --stable-only             # 仅升级到稳定版（默认行为）
+  $0 --allow-testing           # 升级到 Debian 13 Trixie
+  $0 --allow-testing --force   # 强制升级到 Trixie，跳过确认
+  $0 --fix-grub                # 修复引导问题
+  $0 --debug                   # 调试模式
 
 ⚠️  注意:
   • VPS 用户请确保有 VNC / 控制台访问权限
   • 升级前请创建系统快照或数据备份
   • Debian 12 (Bookworm) 为当前推荐稳定版
+  • Debian 13 (Trixie) 处于 testing/freeze，接近 GA，但非生产推荐
 EOF
 }
 
@@ -712,6 +720,7 @@ check_upgrade() {
 
     if [[ -z "$nxt" ]]; then
         echo "  状    态: ✅ 已是最新稳定版本"
+        echo "  提    示: 可用 --allow-testing 升级到 Debian 13 (trixie)"
     else
         nxt_info=$(get_version_info "$nxt")
         nxt_name=$(echo "$nxt_info" | cut -d'|' -f1)
@@ -759,15 +768,17 @@ check_upgrade() {
             echo "  ✅ 推荐升级到 Debian $nxt ($adv_name) - 稳定版"
             echo "  🔧 升级前建议先修复引导: $0 --fix-grub"
             echo "  🚀 执行升级:             $0"
-        elif [[ "$adv_stat" == "testing" ]]; then
-            echo "  ⚠️  可升级到 Debian $nxt ($adv_name) - 测试版"
+        elif [[ "$adv_stat" =~ testing ]]; then
+            echo "  ⚠️  可升级到 Debian $nxt ($adv_name) - 测试版 (freeze 阶段)"
             echo "  🧪 测试环境升级: $0 --allow-testing"
             echo "  🛡️  保持稳定版本: $0 --stable-only  (推荐)"
         else
             echo "  ❌ 不建议升级到 Debian $nxt - 不稳定版本"
         fi
     else
-        echo "  ✅ 当前版本已是最佳选择，无需升级"
+        echo "  ✅ 当前为最新稳定版 (Debian $cur)"
+        echo "  🧪 如需升级到 Trixie: $0 --allow-testing"
+        echo "  🛡️  保持稳定版推荐:   $0 --stable-only (默认)"
     fi
 
     echo "═══════════════════════════════════════════"
@@ -791,10 +802,10 @@ main_upgrade() {
     log_info "Debian 自动升级脚本 v${SCRIPT_VERSION}"
     log_info "当前: Debian $cur ($cur_name) [$cur_stat]"
 
+    # ── v3.1 修复：STABLE_ONLY=1 时 nxt 为空，此处应始终显示提示 ──────────
     if [[ -z "$nxt" ]]; then
         log_success "🎉 已是最新稳定版本 Debian $cur"
-        [[ "${STABLE_ONLY:-1}" != "1" ]] \
-            && log_info "提示: 可用 --allow-testing 升级到 testing 版本"
+        log_info "提示: 可用 --allow-testing 升级到 Debian 13 (trixie) [testing/freeze]"
         exit 0
     fi
 
