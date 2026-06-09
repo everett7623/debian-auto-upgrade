@@ -44,6 +44,9 @@
 #   v3.4.2 2026-06-10  修复：云镜像 / 容器环境下 initramfs 预检因缺少 /var/tmp 失败
 #                     - mkinitramfs 内部 mktemp 依赖 /var/tmp，部分云镜像未预置该目录
 #                     - check_initramfs_health() 调用前确保 /var/tmp 存在
+#   v3.5  2026-06-10  新增：升级后系统清理模式 --cleanup
+#                     - 五步清理：废弃包/孤立依赖 → rc 残留配置 → 旧内核 → APT 缓存 → 旧 dpkg 配置
+#                     - 清理前后显示磁盘用量对比，操作安全可重复执行
 # =============================================================================
 # 使用方法:
 #   chmod +x debian_upgrade.sh
@@ -64,7 +67,7 @@
 set -Ee -o pipefail
 
 # ── 脚本元信息 ────────────────────────────────────────────────────────────────
-SCRIPT_VERSION="3.4.2"
+SCRIPT_VERSION="3.5"
 SCRIPT_NAME="debian_upgrade.sh"
 SCRIPT_DATE="2026-06-10"
 RUN_ID="$(date +%Y%m%d_%H%M%S)_$$"
@@ -682,6 +685,7 @@ show_help() {
   -d, --debug           启用调试模式
   --fix-only            仅修复系统，不升级
   --fix-grub            专门修复 GRUB 引导
+  --cleanup             清理升级后的系统垃圾（旧内核、废弃包、残留配置）
   --force               跳过所有确认提示
   --stable-only         仅升级到稳定版（默认，跳过 testing）
   --allow-testing       允许升级到 Debian 14 Forky（testing）
@@ -710,6 +714,7 @@ show_help() {
   $0 --allow-testing           # 升级到 Debian 14 Forky（testing）
   $0 --allow-testing --force   # 强制升级到 Forky，跳过确认
   $0 --fix-grub                # 修复引导问题
+  $0 --cleanup                 # 清理升级后残留（旧内核、废弃包）
   $0 --debug                   # 调试模式
 
 ⚠️  注意:
@@ -1127,6 +1132,93 @@ fix_only_mode() {
     log_info "建议运行: $0 --check 查看升级状态"
 }
 
+# ── 升级后清理模式 ──────────────────────────────────────────────────────────────
+cleanup_mode() {
+    log_info "═══════════════════════════════════════════"
+    log_info "🧹 升级后系统清理"
+    log_info "═══════════════════════════════════════════"
+
+    # 清理前磁盘用量
+    local before
+    before=$(df -h / | awk 'NR==2{printf "已用 %s / 总计 %s (%.0f%%)", $3, $2, ($3/$2)*100}' 2>/dev/null)
+    log_info "清理前根分区: $before"
+
+    # 步骤 1: 清理废弃包和孤立依赖
+    log_info "步骤 1/5: 清理废弃包和孤立依赖..."
+    $USE_SUDO apt-get autoremove --purge -y 2>&1 | tail -5 || true
+
+    # 步骤 2: 清理 rc 状态残留配置
+    log_info "步骤 2/5: 清理已删除包的残留配置..."
+    local rc_pkgs
+    rc_pkgs=$($USE_SUDO dpkg --list 2>/dev/null | awk '/^rc/{print $2}')
+    if [[ -n "$rc_pkgs" ]]; then
+        log_info "发现 $(echo "$rc_pkgs" | wc -l) 个残留配置包"
+        echo "$rc_pkgs" | xargs -r $USE_SUDO dpkg --purge 2>/dev/null || true
+    else
+        log_info "无残留配置包"
+    fi
+
+    # 步骤 3: 清理旧内核（保留当前和最新）
+    log_info "步骤 3/5: 清理旧内核..."
+    local cur_k latest_k keep_count
+    cur_k=$(uname -r)
+    latest_k=$(ls -t /boot/vmlinuz-* 2>/dev/null | head -1 | sed 's|/boot/vmlinuz-||')
+    local old_kernels=""
+    while read -r pkg; do
+        local ver="${pkg#linux-image-}"
+        ver="${ver#linux-image-}"  # 兼容双重前缀的包名
+        if [[ "$ver" != "$cur_k" && "$ver" != "$latest_k" \
+              && "$pkg" != "linux-image-amd64" \
+              && "$pkg" != "linux-image-arm64" ]]; then
+            old_kernels="$old_kernels $pkg"
+        fi
+    done < <(dpkg -l 'linux-image-*' 2>/dev/null | awk '/^ii/{print $2}')
+
+    if [[ -n "$old_kernels" ]]; then
+        local kernel_count
+        kernel_count=$(echo "$old_kernels" | wc -w)
+        log_info "移除 $kernel_count 个旧内核: $old_kernels"
+        # shellcheck disable=SC2086
+        $USE_SUDO apt-get remove --purge -y $old_kernels 2>/dev/null || true
+    else
+        log_info "无旧内核需清理"
+    fi
+    # 清理残留的 .old / .bak initramfs 文件
+    $USE_SUDO find /boot \( -name "*.old" -o -name "*.bak" \) -delete 2>/dev/null || true
+
+    # 步骤 4: 清理 APT 缓存
+    log_info "步骤 4/5: 清理 APT 缓存..."
+    $USE_SUDO apt-get autoclean 2>/dev/null || true
+    $USE_SUDO apt-get clean 2>/dev/null || true
+
+    # 步骤 5: 清理旧的 dpkg 配置文件
+    log_info "步骤 5/5: 清理旧配置文件..."
+    local old_configs
+    old_configs=$($USE_SUDO find /etc -maxdepth 5 \
+        \( -name "*.dpkg-old" -o -name "*.dpkg-dist" -o -name "*.dpkg-bak" \) \
+        -type f 2>/dev/null)
+    local config_count
+    config_count=$(echo "$old_configs" | grep -c '.' 2>/dev/null || echo 0)
+    if (( config_count > 0 )); then
+        log_info "移除 $config_count 个旧配置文件:"
+        echo "$old_configs" | while read -r f; do
+            [[ -n "$f" ]] && log_debug "  移除: $f"
+        done
+        echo "$old_configs" | xargs -r $USE_SUDO rm -f 2>/dev/null || true
+    else
+        log_info "无旧配置文件需清理"
+    fi
+
+    # 清理后磁盘用量
+    local after
+    after=$(df -h / | awk 'NR==2{printf "已用 %s / 总计 %s (%.0f%%)", $3, $2, ($3/$2)*100}' 2>/dev/null)
+    log_info "清理后根分区: $after"
+
+    log_success "═══════════════════════════════════════════"
+    log_success "🎉 系统清理完成"
+    log_success "═══════════════════════════════════════════"
+}
+
 preflight_mode() {
     log_info "执行升级前深度检查（不会切换软件源或升级软件包）..."
     wait_for_apt_locks
@@ -1181,6 +1273,7 @@ main() {
                 exit 0 ;;
             -c|--check)   check_upgrade; exit 0 ;;
             --preflight)  check_root; check_system; preflight_mode; exit 0 ;;
+            --cleanup)    check_root; check_system; cleanup_mode; exit 0 ;;
             -d|--debug)   export DEBUG=1; log_debug "调试模式已启用"; shift ;;
             --fix-only)   check_root; check_system; fix_only_mode; exit 0 ;;
             --fix-grub)   check_root; fix_grub_mode; exit 0 ;;
