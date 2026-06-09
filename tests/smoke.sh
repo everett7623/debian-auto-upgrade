@@ -16,6 +16,7 @@ grep -q -- '--stable-only' <<<"$help_output" || fail "help misses --stable-only"
 grep -q -- '--allow-testing' <<<"$help_output" || fail "help misses --allow-testing"
 grep -q -- '--preflight' <<<"$help_output" || fail "help misses --preflight"
 grep -q -- '--cleanup' <<<"$help_output" || fail "help misses --cleanup"
+grep -q -- '--self-update' <<<"$help_output" || fail "help misses --self-update"
 
 # Source functions without executing main.
 # shellcheck source=../debian_upgrade.sh
