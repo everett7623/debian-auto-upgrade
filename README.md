@@ -7,7 +7,7 @@
 [![CI](https://github.com/everett7623/debian-auto-upgrade/actions/workflows/ci.yml/badge.svg)](https://github.com/everett7623/debian-auto-upgrade/actions/workflows/ci.yml)
 [![Debian](https://img.shields.io/badge/Debian-11--13-red.svg)](https://www.debian.org/)
 [![Bash](https://img.shields.io/badge/Language-Bash-green.svg)](https://www.gnu.org/software/bash/)
-[![Version](https://img.shields.io/badge/Version-3.3-brightgreen.svg)](https://github.com/everett7623/debian-auto-upgrade/releases)
+[![Version](https://img.shields.io/badge/Version-3.3.1-brightgreen.svg)](https://github.com/everett7623/debian-auto-upgrade/releases)
 
 专为 Debian 系统打造的自动化升级脚本，支持从旧版本安全逐级升级到最新稳定版本。针对 VPS 环境深度优化，具备完善的错误恢复与容错能力。
 
@@ -46,6 +46,7 @@
 ```bash
 wget -O debian_upgrade.sh https://raw.githubusercontent.com/everett7623/debian-auto-upgrade/main/debian_upgrade.sh \
   && chmod +x debian_upgrade.sh \
+  && sudo ./debian_upgrade.sh --preflight \
   && sudo ./debian_upgrade.sh
 ```
 
@@ -67,6 +68,9 @@ sudo ./debian_upgrade.sh --check
 # 检查当前版本与可用升级
 sudo ./debian_upgrade.sh --check
 
+# 深度检查 initramfs、动态库和 dpkg 状态，不切换软件源
+sudo ./debian_upgrade.sh --preflight
+
 # 升级到最新稳定版（推荐）
 sudo ./debian_upgrade.sh
 
@@ -87,6 +91,7 @@ sudo ./debian_upgrade.sh --help
 | `-h, --help` | 显示帮助信息 |
 | `-v, --version` | 显示当前 Debian 版本 |
 | `-c, --check` | 检查可用升级及系统状态 |
+| `--preflight` | 深度检查 initramfs、动态库依赖和 dpkg 状态，不执行升级 |
 | `-d, --debug` | 启用调试模式，输出详细诊断信息 |
 | `--fix-only` | 修复 dpkg、依赖和 GRUB 配置，不执行升级 |
 | `--fix-grub` | 显式执行 GRUB 引导修复 |
@@ -102,6 +107,9 @@ sudo ./debian_upgrade.sh --help
 ```bash
 # 检查状态，不执行升级
 sudo ./debian_upgrade.sh --check
+
+# 深度预检通过后再升级
+sudo ./debian_upgrade.sh --preflight
 
 # 升级到 Debian 13 Trixie（当前稳定版）
 sudo ./debian_upgrade.sh --stable-only
@@ -167,10 +175,10 @@ sudo ./debian_upgrade.sh --fix-grub
 
 ### 四阶段升级流程
 
-1. **升级前检查** — 检查版本、磁盘、内存、网络、启动模式及 APT/dpkg 状态
+1. **升级前检查** — 检查版本、磁盘、内存、网络、启动模式、动态库依赖及 initramfs 生成能力
 2. **最小升级** (`apt-get upgrade`) — 先处理不涉及复杂依赖变更的软件包
 3. **完整升级** (`apt-get dist-upgrade`) — 执行完整发行版升级
-4. **升级后处理** — 重建 initramfs、刷新 GRUB 配置并验证目标版本
+4. **升级后处理** — 验证最新内核 initramfs、刷新 GRUB 配置并验证目标版本
 
 ### 安全边界
 
@@ -180,6 +188,10 @@ sudo ./debian_upgrade.sh --fix-grub
 - 常规升级不写入 MBR 或无条件重装引导器
 - 升级后不自动执行 `autoremove`
 - 只恢复脚本本次主动停止的自动更新单元
+- 最小升级失败后立即停止，不再带病执行完整升级
+- 完整升级失败后不自动重复整套升级流程
+- APT 默认不下载源码索引和翻译索引
+- APT 已生成最新内核 initramfs 时不再重复重建全部旧内核
 
 完整约束见 [docs/SAFETY.md](docs/SAFETY.md)。
 
@@ -304,6 +316,18 @@ sudo apt-get --fix-broken install
 sudo ./debian_upgrade.sh --fix-only
 ```
 
+### ❓ initramfs 报 `hooks/fsck failed` 或出现 `/var/adm/<UUID>`
+
+这不是普通下载失败。若 `mkinitramfs` 输出 `/var/adm/<UUID>` 等非常规动态库路径，应优先排查 `/etc/ld.so.preload` 注入或系统文件被修改：
+
+```bash
+sudo cat /etc/ld.so.preload
+sudo env --unset=LD_PRELOAD ldd /sbin/fsck
+sudo ./debian_upgrade.sh --preflight
+```
+
+在确认异常库来源前，不要创建缺失目录绕过错误，也不要重启到缺少 initrd 的新内核。建议先创建快照并通过服务商控制台或安全工具完成系统排查。
+
 ### ❓ 升级后网络断开
 
 脚本不会自动改网卡名或重启网络服务。请通过 VPS 控制台登录后检查：
@@ -389,6 +413,7 @@ systemctl status networking systemd-networkd NetworkManager
 
 | 版本 | 日期 | 主要变更 |
 |------|------|----------|
+| **v3.3.1** | 2026-06-09 | 修复失败后重复执行导致耗时过长：新增 initramfs/动态库预检与 `--preflight`；首次升级失败立即停止；精简 APT 索引；跳过重复 initramfs 重建 |
 | **v3.3** | 2026-06-09 | 安全加固：等待 APT 锁正常释放；支持 `.sources`；取消默认改网卡、重启网络、写 MBR 和 `autoremove`；补充测试、CI 与开发文档 |
 | **v3.2** | 2026-06-01 | 更新 Debian 13 Trixie 为正式稳定版：12→13 直接升级无需 `--allow-testing`，13→14 (Forky) 需 `--allow-testing`，同步更新 README |
 | **v3.1** | 2026-06-01 | 修复 Debian 12 已是最新稳定版时升级提示不显示的 bug |

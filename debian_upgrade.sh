@@ -51,12 +51,14 @@
 set -Ee -o pipefail
 
 # ── 脚本元信息 ────────────────────────────────────────────────────────────────
-SCRIPT_VERSION="3.3"
+SCRIPT_VERSION="3.3.1"
 SCRIPT_NAME="debian_upgrade.sh"
 SCRIPT_DATE="2026-06-09"
 RUN_ID="$(date +%Y%m%d_%H%M%S)_$$"
 RUN_DIR="${TMPDIR:-/tmp}/debian-auto-upgrade-${RUN_ID}"
 APT_UPDATE_LOG="${RUN_DIR}/apt-update.log"
+APT_UPGRADE_LOG="${RUN_DIR}/apt-upgrade.log"
+KEEP_RUN_DIR=0
 STOPPED_APT_UNITS=()
 
 # ── 颜色定义 ──────────────────────────────────────────────────────────────────
@@ -431,6 +433,95 @@ wait_for_apt_locks() {
     done
 }
 
+check_runtime_injection() {
+    local target dependency
+    local suspicious=0
+
+    for target in /sbin/fsck /sbin/fsck.ext4 /usr/sbin/fsck /usr/sbin/fsck.ext4; do
+        [[ -x "$target" ]] || continue
+        while read -r dependency; do
+            case "$dependency" in
+                /tmp/*|/var/tmp/*|/var/adm/*|/dev/shm/*|/home/*|/root/*)
+                    log_error "检测到异常动态库依赖: $target -> $dependency"
+                    suspicious=1
+                    ;;
+            esac
+        done < <(
+            env --unset=LD_PRELOAD ldd "$target" 2>/dev/null \
+                | sed -nE 's/.*=>[[:space:]]+(\/[^[:space:]]+).*/\1/p; s/^[[:space:]]*(\/[^[:space:]]+).*/\1/p'
+        )
+    done
+
+    if [[ -s /etc/ld.so.preload ]]; then
+        log_warning "检测到非空 /etc/ld.so.preload，需确认其中库文件可信"
+        while read -r dependency; do
+            [[ -z "$dependency" || "$dependency" == \#* ]] && continue
+            case "$dependency" in
+                /lib/*|/lib64/*|/usr/lib/*|/usr/lib64/*) ;;
+                *)
+                    log_error "/etc/ld.so.preload 包含非常规路径: $dependency"
+                    suspicious=1
+                    ;;
+            esac
+        done < /etc/ld.so.preload
+    fi
+
+    if (( suspicious )); then
+        log_error "系统可能存在异常 LD_PRELOAD 注入，已停止升级以避免将异常库写入 initramfs"
+        log_error "请检查: cat /etc/ld.so.preload; env --unset=LD_PRELOAD ldd /sbin/fsck"
+        return 1
+    fi
+}
+
+check_initramfs_health() {
+    command -v mkinitramfs >/dev/null 2>&1 || {
+        log_warning "未找到 mkinitramfs，跳过 initramfs 预构建检查"
+        return 0
+    }
+
+    local kernel
+    kernel="$(uname -r)"
+    [[ -d "/lib/modules/$kernel" ]] || {
+        log_warning "缺少当前内核模块目录 /lib/modules/$kernel，跳过 initramfs 预构建检查"
+        return 0
+    }
+
+    mkdir -p "$RUN_DIR"
+    log_info "预检 initramfs 生成能力（内核: $kernel）..."
+    if ! $USE_SUDO mkinitramfs -o "$RUN_DIR/initramfs-preflight.img" "$kernel" \
+        >"$RUN_DIR/initramfs-preflight.log" 2>&1; then
+        KEEP_RUN_DIR=1
+        log_error "initramfs 预检失败，尚未切换软件源，已安全停止"
+        if grep -q '/var/adm/\|LD_PRELOAD\|hooks/fsck failed' "$RUN_DIR/initramfs-preflight.log"; then
+            log_error "检测到 fsck hook 或异常动态库路径问题，请先排查系统完整性"
+        fi
+        tail -n 20 "$RUN_DIR/initramfs-preflight.log" >&2
+        return 1
+    fi
+    $USE_SUDO rm -f "$RUN_DIR/initramfs-preflight.img"
+    log_success "initramfs 预检通过"
+}
+
+diagnose_upgrade_failure() {
+    local log_file="$1"
+    [[ -f "$log_file" ]] || return 0
+    KEEP_RUN_DIR=1
+
+    if grep -q 'hooks/fsck failed\|mkinitramfs_.*\/var\/adm\/' "$log_file"; then
+        log_error "失败来自 initramfs fsck hook，不是网络或 APT 下载速度问题"
+        log_error "若日志含 /var/adm/<UUID>，优先检查 /etc/ld.so.preload 和异常动态库注入"
+        log_error "诊断命令: cat /etc/ld.so.preload; env --unset=LD_PRELOAD ldd /sbin/fsck"
+    elif grep -q 'No space left on device' "$log_file"; then
+        log_error "磁盘空间不足，请检查: df -h / /boot /var"
+    elif grep -q 'Temporary failure resolving\|Could not resolve\|Connection timed out' "$log_file"; then
+        log_error "检测到 DNS 或网络连接问题，请检查网络或使用 --mirror"
+    elif grep -q 'dpkg was interrupted' "$log_file"; then
+        log_error "dpkg 状态中断，请在确认系统安全后运行: dpkg --configure -a"
+    fi
+
+    log_error "完整日志保留于: $log_file"
+}
+
 stop_apt_units() {
     command -v systemctl >/dev/null 2>&1 || return 0
     local unit
@@ -450,6 +541,8 @@ pre_upgrade_preparation() {
 
     stop_apt_units
     wait_for_apt_locks
+    check_runtime_injection
+    check_initramfs_health
 
     # 修复 dpkg / 损坏依赖
     $USE_SUDO dpkg --audit
@@ -490,14 +583,21 @@ post_upgrade_fixes() {
 
     fix_network_config "$backup_dir"
 
-    # 重建 initramfs
-    log_info "重建 initramfs..."
-    $USE_SUDO rm -f /boot/initrd.img-*.bak 2>/dev/null || true
-    while read -r kver; do
-        log_info "  内核: $kver"
-        $USE_SUDO update-initramfs -c -k "$kver" 2>/dev/null \
-            || $USE_SUDO update-initramfs -u -k "$kver" 2>/dev/null || true
-    done < <(ls /boot/vmlinuz-* 2>/dev/null | sed 's|/boot/vmlinuz-||')
+    # APT 的内核触发器通常已经生成 initramfs；仅在最新内核缺失时补建。
+    local latest_kernel=""
+    latest_kernel=$(ls -t /boot/vmlinuz-* 2>/dev/null | head -1 | sed 's|/boot/vmlinuz-||')
+    if [[ -n "$latest_kernel" ]]; then
+        if [[ -s "/boot/initrd.img-$latest_kernel" ]]; then
+            log_info "最新内核 initramfs 已存在，跳过重复重建: $latest_kernel"
+        else
+            log_warning "最新内核缺少 initramfs，开始补建: $latest_kernel"
+            if ! $USE_SUDO update-initramfs -c -k "$latest_kernel" 2>&1 \
+                | tee "$APT_UPGRADE_LOG"; then
+                diagnose_upgrade_failure "$APT_UPGRADE_LOG"
+                return 1
+            fi
+        fi
+    fi
 
     # 发行版升级不应无条件重装引导器或写入 MBR，仅刷新配置。
     if command -v update-grub >/dev/null 2>&1; then
@@ -509,7 +609,7 @@ post_upgrade_fixes() {
     log_info "跳过自动 autoremove；确认服务正常后可手动执行 apt-get autoremove --purge"
     $USE_SUDO apt-get autoclean 2>/dev/null || true
 
-    sync; sync; sync
+    sync
     log_success "升级后修复完成"
 }
 
@@ -556,6 +656,7 @@ show_help() {
   -h, --help            显示此帮助
   -v, --version         显示当前 Debian 版本
   -c, --check           检查是否有可用升级
+  --preflight           执行升级前深度检查，不切换软件源
   -d, --debug           启用调试模式
   --fix-only            仅修复系统，不升级
   --fix-grub            专门修复 GRUB 引导
@@ -581,6 +682,7 @@ show_help() {
 💻 示例:
   $0                           # 自动升级到下一稳定版
   $0 --check                   # 检查升级状态
+  $0 --preflight               # 检查 initramfs、动态库和 dpkg 状态
   $0 --mirror cn               # 使用阿里云源升级（推荐国内）
   $0 --stable-only             # 仅升级到稳定版（默认行为）
   $0 --allow-testing           # 升级到 Debian 14 Forky（testing）
@@ -761,13 +863,10 @@ main_upgrade() {
     $USE_SUDO tee /etc/apt/sources.list > /dev/null << EOF
 # Debian $nxt ($nxt_name) - 由 $SCRIPT_NAME v$SCRIPT_VERSION 自动生成
 deb ${MIRROR_BASE} ${nxt_name} main contrib non-free${nff}
-deb-src ${MIRROR_BASE} ${nxt_name} main contrib non-free${nff}
 
 deb ${MIRROR_SECURITY} ${nxt_name}${sec_suffix} main contrib non-free${nff}
-deb-src ${MIRROR_SECURITY} ${nxt_name}${sec_suffix} main contrib non-free${nff}
 
 deb ${MIRROR_BASE} ${nxt_name}-updates main contrib non-free${nff}
-deb-src ${MIRROR_BASE} ${nxt_name}-updates main contrib non-free${nff}
 EOF
 
     log_success "软件源配置完成"
@@ -776,7 +875,7 @@ EOF
     log_info "步骤 2/4: 更新软件包列表"
     # 允许部分失败（如残留第三方源），继续升级
     mkdir -p "$RUN_DIR"
-    $USE_SUDO apt-get update 2>&1 | tee "$APT_UPDATE_LOG" || {
+    $USE_SUDO apt-get -o Acquire::Languages=none update 2>&1 | tee "$APT_UPDATE_LOG" || {
         log_warning "apt-get update 出现错误（见上），检查是否可继续..."
         # 如果是 Release 文件不存在（404），属于已清理源的残留，可忽略
         if grep -q "404\|Release.*does not have" "$APT_UPDATE_LOG"; then
@@ -788,7 +887,7 @@ EOF
                     log_warning "  禁用: $f"
                     $USE_SUDO mv "$f" "${f}.disabled-by-debian-upgrade" 2>/dev/null || true
                 done
-            $USE_SUDO apt-get update || {
+            $USE_SUDO apt-get -o Acquire::Languages=none update || {
                 log_error "软件包列表更新失败，请检查网络或手动修复源配置"
                 exit 1
             }
@@ -802,25 +901,22 @@ EOF
     log_info "步骤 3/4: 执行系统升级"
 
     log_info "  3.1 最小升级 (upgrade)..."
-    DEBIAN_FRONTEND=noninteractive $USE_SUDO apt-get upgrade -y \
+    if ! DEBIAN_FRONTEND=noninteractive $USE_SUDO apt-get upgrade -y \
         -o Dpkg::Options::="--force-confdef" \
-        -o Dpkg::Options::="--force-confold" || \
-        log_warning "最小升级出现警告，继续完整升级"
+        -o Dpkg::Options::="--force-confold" 2>&1 | tee "$APT_UPGRADE_LOG"; then
+        log_error "最小升级失败，已停止；不会继续执行完整升级"
+        diagnose_upgrade_failure "$APT_UPGRADE_LOG"
+        exit 1
+    fi
 
     log_info "  3.2 完整升级 (dist-upgrade)..."
-    DEBIAN_FRONTEND=noninteractive $USE_SUDO apt-get dist-upgrade -y \
+    if ! DEBIAN_FRONTEND=noninteractive $USE_SUDO apt-get dist-upgrade -y \
         -o Dpkg::Options::="--force-confdef" \
-        -o Dpkg::Options::="--force-confold" || {
-        log_error "dist-upgrade 失败，尝试修复后重试"
-        $USE_SUDO dpkg --configure -a 2>/dev/null || true
-        DEBIAN_FRONTEND=noninteractive $USE_SUDO apt-get -f install -y 2>/dev/null || true
-        DEBIAN_FRONTEND=noninteractive $USE_SUDO apt-get dist-upgrade -y \
-            -o Dpkg::Options::="--force-confdef" \
-            -o Dpkg::Options::="--force-confold" || {
-            log_error "升级失败，请查看上方错误信息"
-            exit 1
-        }
-    }
+        -o Dpkg::Options::="--force-confold" 2>&1 | tee "$APT_UPGRADE_LOG"; then
+        log_error "完整升级失败，已停止自动重试，避免重复执行同一故障"
+        diagnose_upgrade_failure "$APT_UPGRADE_LOG"
+        exit 1
+    fi
 
     # ── 步骤 4：修复 ──────────────────────────────────────────────────────────
     log_info "步骤 4/4: 升级后修复"
@@ -961,38 +1057,64 @@ fix_only_mode() {
     log_info "🔧 系统修复模式"
     log_info "═══════════════════════════════════════════"
 
-    log_info "1/4 等待 APT/dpkg 锁释放"
+    log_info "1/5 检查异常动态库注入"
+    check_runtime_injection
+
+    log_info "2/5 检查 initramfs 生成能力"
+    check_initramfs_health
+
+    log_info "3/5 等待 APT/dpkg 锁释放"
     wait_for_apt_locks
 
-    log_info "2/4 修复 dpkg 状态"
-    $USE_SUDO dpkg --configure -a 2>/dev/null || true
-    DEBIAN_FRONTEND=noninteractive $USE_SUDO apt-get --fix-broken install -y 2>/dev/null || true
+    log_info "4/5 修复 dpkg 和依赖状态"
+    if ! $USE_SUDO dpkg --configure -a 2>&1 | tee "$APT_UPGRADE_LOG"; then
+        diagnose_upgrade_failure "$APT_UPGRADE_LOG"
+        return 1
+    fi
+    if ! DEBIAN_FRONTEND=noninteractive $USE_SUDO apt-get --fix-broken install -y \
+        2>&1 | tee "$APT_UPGRADE_LOG"; then
+        diagnose_upgrade_failure "$APT_UPGRADE_LOG"
+        return 1
+    fi
 
-    log_info "3/4 刷新 GRUB 配置"
+    log_info "5/5 刷新 GRUB 配置"
     fix_grub_quick
-
-    log_info "4/4 清理旧内核"
-    clean_old_kernels
-
-    $USE_SUDO apt-get update 2>/dev/null || log_warning "apt update 失败，但修复已完成"
 
     log_success "系统修复完成"
     log_info "建议运行: $0 --check 查看升级状态"
 }
 
+preflight_mode() {
+    log_info "执行升级前深度检查（不会切换软件源或升级软件包）..."
+    wait_for_apt_locks
+    check_runtime_injection
+    check_initramfs_health
+
+    if $USE_SUDO dpkg --audit | grep -q .; then
+        log_error "dpkg 检测到未完成配置的软件包，请先处理后再升级"
+        $USE_SUDO dpkg --audit >&2
+        return 1
+    fi
+
+    log_success "升级前深度检查通过"
+}
+
 # ── 错误恢复 ──────────────────────────────────────────────────────────────────
 error_recovery() {
     local code="$1"
+    KEEP_RUN_DIR=1
     log_error "脚本异常退出（退出码: $code）"
-    log_info "尝试基本恢复..."
-    $USE_SUDO dpkg --configure -a 2>/dev/null || true
-    $USE_SUDO apt-get --fix-broken install -y 2>/dev/null || true
-    log_info "基本恢复完成，建议运行: $0 --fix-only"
+    log_info "已停止自动恢复，避免在根因未解决时重复执行耗时的包管理操作"
+    log_info "请查看上方首个错误；确认系统安全后再运行: $0 --fix-only"
 }
 
 # ── 清理退出 ──────────────────────────────────────────────────────────────────
 cleanup() {
-    rm -rf "$RUN_DIR" 2>/dev/null || true
+    if [[ "$KEEP_RUN_DIR" == "1" ]]; then
+        log_warning "诊断日志已保留: $RUN_DIR"
+    else
+        rm -rf "$RUN_DIR" 2>/dev/null || true
+    fi
     local unit
     for unit in "${STOPPED_APT_UNITS[@]}"; do
         $USE_SUDO systemctl start "$unit" 2>/dev/null || true
@@ -1015,6 +1137,7 @@ main() {
                 echo "Debian $v ($(echo $vi|cut -d'|' -f1)) [$(echo $vi|cut -d'|' -f2)]"
                 exit 0 ;;
             -c|--check)   check_upgrade; exit 0 ;;
+            --preflight)  check_root; check_system; preflight_mode; exit 0 ;;
             -d|--debug)   export DEBUG=1; log_debug "调试模式已启用"; shift ;;
             --fix-only)   check_root; check_system; fix_only_mode; exit 0 ;;
             --fix-grub)   check_root; fix_grub_mode; exit 0 ;;
