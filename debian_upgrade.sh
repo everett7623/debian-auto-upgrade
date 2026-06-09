@@ -38,6 +38,9 @@
 #                     - 修复 fix_grub_mode() 中 lsblk 磁盘列表 awk 引用空字段的显示缺陷
 #                     - 修复 get_current_version 策略4 缺少 forky 代号检测
 #                     - 注释全面中文化，统一术语和表述
+#   v3.4.1 2026-06-10  紧急修复：跨版本升级 GPG 签名验证失败
+#                     - 切换软件源之前更新 debian-archive-keyring，确保包含目标版本的 GPG 密钥
+#                     - apt-get update 遇到 NO_PUBKEY 错误时，临时使用 [trusted=yes] 安装密钥环后恢复验证
 # =============================================================================
 # 使用方法:
 #   chmod +x debian_upgrade.sh
@@ -58,7 +61,7 @@
 set -Ee -o pipefail
 
 # ── 脚本元信息 ────────────────────────────────────────────────────────────────
-SCRIPT_VERSION="3.4"
+SCRIPT_VERSION="3.4.1"
 SCRIPT_NAME="debian_upgrade.sh"
 SCRIPT_DATE="2026-06-10"
 RUN_ID="$(date +%Y%m%d_%H%M%S)_$$"
@@ -557,7 +560,13 @@ pre_upgrade_preparation() {
     $USE_SUDO dpkg --configure -a 2>/dev/null || true
     DEBIAN_FRONTEND=noninteractive $USE_SUDO apt-get --fix-broken install -y 2>/dev/null || true
 
-    # 关键步骤：清理旧/无效 sources，避免 404
+    # 关键步骤：更新归档密钥环，确保包含目标版本的 GPG 签名密钥
+    # 必须先更新当前源的密钥环，再切换到新版本源，否则 apt-get update 会报 NO_PUBKEY
+    log_info "更新 Debian 归档密钥环..."
+    $USE_SUDO apt-get update 2>/dev/null || log_warning "当前源更新失败，跳过密钥环更新"
+    DEBIAN_FRONTEND=noninteractive $USE_SUDO apt-get install -y --reinstall debian-archive-keyring 2>/dev/null || true
+
+    # 清理旧/无效 sources，避免 404
     clean_apt_sources "$target_codename"
 
     # 检查并预设 GRUB 磁盘，避免升级时弹出交互提示
@@ -899,6 +908,27 @@ EOF
                 log_error "软件包列表更新失败，请检查网络或手动修复源配置"
                 exit 1
             }
+        # 如果是 GPG 签名验证错误，临时跳过签名安装密钥环后恢复正常验证
+        elif grep -q "NO_PUBKEY\|GPG error\|is not signed" "$APT_UPDATE_LOG"; then
+            log_warning "检测到 GPG 签名验证错误，尝试安装目标版本密钥环..."
+            # 临时为所有源添加 [trusted=yes] 跳过签名验证
+            $USE_SUDO sed -i 's/^deb /deb [trusted=yes] /' /etc/apt/sources.list
+            $USE_SUDO apt-get -o Acquire::Languages=none update 2>/dev/null || {
+                log_error "即使跳过签名验证，软件包列表更新仍然失败"
+                $USE_SUDO sed -i 's/^deb \[trusted=yes\] /deb /' /etc/apt/sources.list
+                exit 1
+            }
+            # 安装新版本的归档密钥环
+            DEBIAN_FRONTEND=noninteractive $USE_SUDO apt-get install -y \
+                debian-archive-keyring 2>/dev/null || true
+            # 移除 [trusted=yes]，恢复正常的签名验证
+            $USE_SUDO sed -i 's/^deb \[trusted=yes\] /deb /' /etc/apt/sources.list
+            # 再次更新以确认签名验证正常
+            $USE_SUDO apt-get -o Acquire::Languages=none update || {
+                log_error "密钥环安装后软件包列表仍未通过验证，请检查网络或手动修复源配置"
+                exit 1
+            }
+            log_success "密钥环已更新，签名验证恢复正常"
         else
             log_error "软件包列表更新失败"
             exit 1

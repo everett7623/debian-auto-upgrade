@@ -39,6 +39,8 @@ fi
 
 grep -q 'check_initramfs_health' "$SCRIPT" || fail "missing initramfs preflight"
 grep -q 'check_runtime_injection' "$SCRIPT" || fail "missing runtime injection check"
+grep -q 'debian-archive-keyring' "$SCRIPT" || fail "missing keyring update before source switch"
+grep -Fq '[trusted=yes]' "$SCRIPT" || fail "missing GPG error recovery path"
 
 failure_log="$(mktemp)"
 printf '%s\n' "E: /usr/share/initramfs-tools/hooks/fsck failed with return 1." >"$failure_log"
