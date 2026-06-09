@@ -1,5 +1,20 @@
 # Changelog
 
+## [3.3.0] - 2026-06-09
+
+### Changed
+- Wait for APT/dpkg locks instead of deleting lock files.
+- Back up and disable both `.list` and Deb822 `.sources` repositories.
+- Keep logs on stderr so command substitutions return clean values.
+- Stop automatic network renaming, network service restarts, MBR writes, and post-upgrade autoremove.
+- Use an isolated per-run temporary directory and restore only services stopped by the script.
+- Refresh README from the original structure and add development, contribution, security, testing, and CI documentation.
+
+### Fixed
+- Preserve the backup directory value when debug logging is enabled.
+- Write root-owned network snapshots through `sudo tee`.
+- Correct `find` expression precedence when cleaning `.old` and `.bak` files.
+
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),

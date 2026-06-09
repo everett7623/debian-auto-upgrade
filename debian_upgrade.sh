@@ -2,7 +2,7 @@
 # =============================================================================
 # 脚本名称: debian_upgrade.sh
 # 描    述: Debian 系统自动逐级升级脚本
-#           支持 Debian 8~13，自动检测版本并升级到下一稳定版本
+#           生产入口支持 Debian 11~13，自动检测版本并升级到下一稳定版本
 #           适用于 VPS、物理机、虚拟机等大多数 Debian 环境
 # =============================================================================
 # 版本历史:
@@ -35,7 +35,7 @@
 # 使用方法:
 #   chmod +x debian_upgrade.sh
 #   sudo ./debian_upgrade.sh              # 正常升级（稳定版，默认）
-#   sudo ./debian_upgrade.sh --allow-testing  # 允许升级到 Debian 13 Trixie
+#   sudo ./debian_upgrade.sh --allow-testing  # 允许升级到 Debian 14 Forky
 #   sudo ./debian_upgrade.sh --check      # 检查升级状态
 #   sudo ./debian_upgrade.sh --fix-grub   # 专门修复 GRUB
 #   sudo ./debian_upgrade.sh --help       # 查看完整帮助
@@ -48,12 +48,16 @@
 #   - Debian 12 (Bookworm) 已进入 oldstable，仍在安全支持期内
 # =============================================================================
 
-set -e
+set -Ee -o pipefail
 
 # ── 脚本元信息 ────────────────────────────────────────────────────────────────
-SCRIPT_VERSION="3.2"
+SCRIPT_VERSION="3.3"
 SCRIPT_NAME="debian_upgrade.sh"
-SCRIPT_DATE="2026-06-01"
+SCRIPT_DATE="2026-06-09"
+RUN_ID="$(date +%Y%m%d_%H%M%S)_$$"
+RUN_DIR="${TMPDIR:-/tmp}/debian-auto-upgrade-${RUN_ID}"
+APT_UPDATE_LOG="${RUN_DIR}/apt-update.log"
+STOPPED_APT_UNITS=()
 
 # ── 颜色定义 ──────────────────────────────────────────────────────────────────
 RED='\033[0;31m'
@@ -65,13 +69,13 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 # ── 日志函数 ──────────────────────────────────────────────────────────────────
-log_info()    { echo -e "${BLUE}[INFO]${NC}    $(date '+%H:%M:%S') - $1"; }
-log_success() { echo -e "${GREEN}[SUCCESS]${NC} $(date '+%H:%M:%S') - $1"; }
-log_warning() { echo -e "${YELLOW}[WARNING]${NC} $(date '+%H:%M:%S') - $1"; }
-log_error()   { echo -e "${RED}[ERROR]${NC}   $(date '+%H:%M:%S') - $1"; }
+log_info()    { echo -e "${BLUE}[INFO]${NC}    $(date '+%H:%M:%S') - $1" >&2; }
+log_success() { echo -e "${GREEN}[SUCCESS]${NC} $(date '+%H:%M:%S') - $1" >&2; }
+log_warning() { echo -e "${YELLOW}[WARNING]${NC} $(date '+%H:%M:%S') - $1" >&2; }
+log_error()   { echo -e "${RED}[ERROR]${NC}   $(date '+%H:%M:%S') - $1" >&2; }
 log_debug()   {
     if [[ "${DEBUG:-0}" == "1" ]]; then
-        echo -e "${PURPLE}[DEBUG]${NC}   $(date '+%H:%M:%S') - $1"
+        echo -e "${PURPLE}[DEBUG]${NC}   $(date '+%H:%M:%S') - $1" >&2
     fi
 }
 
@@ -174,12 +178,12 @@ set_mirror() {
 # ── 版本信息映射 ──────────────────────────────────────────────────────────────
 get_version_info() {
     case $1 in
-        "8")  echo "jessie|oldoldstable" ;;
-        "9")  echo "stretch|oldoldstable" ;;
-        "10") echo "buster|oldstable" ;;
-        "11") echo "bullseye|oldstable" ;;
+        "8")  echo "jessie|archived" ;;
+        "9")  echo "stretch|archived" ;;
+        "10") echo "buster|archived" ;;
+        "11") echo "bullseye|oldoldstable" ;;
         "12") echo "bookworm|oldstable" ;;
-        "13") echo "trixie|stable" ;;           # v3.2: Trixie 正式 stable，2025-08-09 发布
+        "13") echo "trixie|stable" ;;
         "14") echo "forky|testing" ;;
         *)    echo "unknown|unknown" ;;
     esac
@@ -187,12 +191,9 @@ get_version_info() {
 
 get_next_version() {
     case $1 in
-        "8")  echo "9"  ;;
-        "9")  echo "10" ;;
-        "10") echo "11" ;;
         "11") echo "12" ;;
-        "12") echo "13" ;;                                                          # v3.2: Trixie 已是 stable，直接升级
-        "13") [[ "${STABLE_ONLY:-1}" == "1" ]] && echo "" || echo "14" ;;          # v3.2: forky 为 testing，需 --allow-testing
+        "12") echo "13" ;;
+        "13") [[ "${STABLE_ONLY:-1}" == "1" ]] && echo "" || echo "14" ;;
         *)    echo "" ;;
     esac
 }
@@ -270,40 +271,25 @@ save_network_config() {
     $USE_SUDO mkdir -p "$backup_dir/network"
     $USE_SUDO cp -a /etc/network/interfaces* "$backup_dir/network/" 2>/dev/null || true
     $USE_SUDO cp -a /etc/systemd/network/    "$backup_dir/network/" 2>/dev/null || true
-    ip addr show  > "$backup_dir/network/ip_addr_before.txt"  2>/dev/null || true
-    ip route show > "$backup_dir/network/ip_route_before.txt" 2>/dev/null || true
+    ip addr show  2>/dev/null | $USE_SUDO tee "$backup_dir/network/ip_addr_before.txt" >/dev/null || true
+    ip route show 2>/dev/null | $USE_SUDO tee "$backup_dir/network/ip_route_before.txt" >/dev/null || true
     ip -o link show | awk -F': ' '{print $2}' | grep -v lo \
-        > "$backup_dir/network/interface_names.txt" 2>/dev/null || true
+        | $USE_SUDO tee "$backup_dir/network/interface_names.txt" >/dev/null || true
     echo "$backup_dir"
 }
 
 # ── 网络配置修复 ──────────────────────────────────────────────────────────────
 fix_network_config() {
     local backup_dir="$1"
-    log_debug "检查并修复网络配置..."
-    local new_ifs
-    new_ifs=$(ip -o link show | awk -F': ' '{print $2}' | grep -v lo)
+    log_debug "核对网络接口（不会自动改名或重启网络服务）..."
+    [[ -f "$backup_dir/network/interface_names.txt" ]] || return 0
 
-    if [[ -f "$backup_dir/network/interface_names.txt" ]]; then
-        while read -r old_if; do
-            if ! echo "$new_ifs" | grep -q "^${old_if}$"; then
-                log_warning "网络接口 $old_if 已不存在"
-                local new_if
-                new_if=$(echo "$new_ifs" | head -1)
-                if [[ -n "$new_if" && -f /etc/network/interfaces ]]; then
-                    log_info "将 $old_if 的配置映射到 $new_if"
-                    $USE_SUDO sed -i "s/\b${old_if}\b/$new_if/g" /etc/network/interfaces
-                fi
-            fi
-        done < "$backup_dir/network/interface_names.txt"
-    fi
-
-    for svc in NetworkManager systemd-networkd networking; do
-        if systemctl is-enabled "$svc" >/dev/null 2>&1; then
-            log_debug "$svc 已启用"
-            break
-        fi
-    done
+    local old_if
+    while read -r old_if; do
+        [[ -z "$old_if" ]] && continue
+        ip link show "$old_if" >/dev/null 2>&1 \
+            || log_warning "升级前的网络接口 $old_if 当前不存在，请在控制台核对网络配置"
+    done < "$backup_dir/network/interface_names.txt"
 }
 
 # ── 清理旧内核 ────────────────────────────────────────────────────────────────
@@ -333,7 +319,7 @@ clean_old_kernels() {
         log_info "无需清理旧内核"
     fi
 
-    $USE_SUDO find /boot -name "*.old" -o -name "*.bak" -delete 2>/dev/null || true
+    $USE_SUDO find /boot \( -name "*.old" -o -name "*.bak" \) -delete 2>/dev/null || true
 
     if mount | grep -q " /boot "; then
         log_info "/boot 使用: $(df -h /boot | awk 'NR==2{print $5}') | 可用: $(df -h /boot | awk 'NR==2{print $4}')"
@@ -344,92 +330,30 @@ clean_old_kernels() {
 # 解决问题：旧版本 backports、第三方源在升级后代号不匹配，导致 apt update 报 404
 clean_apt_sources() {
     local target_codename="$1"
-    log_info "清理无效 APT 源（目标代号: $target_codename）..."
+    log_info "备份并暂时禁用附加 APT 源（目标代号: $target_codename）..."
 
-    # 备份 sources.list.d/
     if [[ -d /etc/apt/sources.list.d ]]; then
         local bak_dir="/etc/apt/sources.list.d.bak_$(date +%s)"
-        $USE_SUDO cp -a /etc/apt/sources.list.d "$bak_dir" 2>/dev/null || true
+        $USE_SUDO cp -a /etc/apt/sources.list.d "$bak_dir"
         log_info "已备份 sources.list.d/ 到 $bak_dir"
 
-        # 禁用（重命名）含有旧代号的源文件，避免影响升级
         while read -r src_file; do
-            # 跳过已禁用的文件
-            [[ "$src_file" == *.disabled ]] && continue
-
-            # 如果文件内容涉及 backports 或非当前目标代号，暂时禁用
-            if grep -qE \
-                "bullseye-backports|buster-backports|stretch-backports|jessie-backports" \
-                "$src_file" 2>/dev/null; then
-                log_warning "禁用 backports 源: $src_file"
-                $USE_SUDO mv "$src_file" "${src_file}.disabled" 2>/dev/null || true
-            fi
-        done < <(find /etc/apt/sources.list.d/ -maxdepth 1 -name "*.list" 2>/dev/null)
+            [[ -z "$src_file" ]] && continue
+            log_warning "暂时禁用附加源: $src_file"
+            $USE_SUDO mv "$src_file" "${src_file}.disabled-by-debian-upgrade"
+        done < <(find /etc/apt/sources.list.d/ -maxdepth 1 -type f \
+            \( -name "*.list" -o -name "*.sources" \) 2>/dev/null)
     fi
 
-    # 同样检查主 sources.list 中的 backports 行
     if [[ -f /etc/apt/sources.list ]]; then
         if grep -q "backports" /etc/apt/sources.list 2>/dev/null; then
             log_warning "注释掉 sources.list 中的 backports 行"
-            $USE_SUDO sed -i '/backports/s/^/#/' /etc/apt/sources.list
+            $USE_SUDO sed -i '/^[[:space:]]*deb.*backports/s/^/# disabled by debian-auto-upgrade: /' \
+                /etc/apt/sources.list
         fi
     fi
 
-    log_success "APT 源清理完成"
-}
-
-# ── 安全 GRUB 更新（保守策略）────────────────────────────────────────────────
-update_grub_safe() {
-    local boot_mode
-    boot_mode=$(detect_boot_mode)
-    local boot_disk
-    boot_disk=$(detect_boot_disk)
-
-    log_info "更新 GRUB 配置（启动模式: $boot_mode）"
-
-    # 先只更新配置，不重装
-    $USE_SUDO update-grub 2>/dev/null \
-        || $USE_SUDO grub-mkconfig -o /boot/grub/grub.cfg 2>/dev/null \
-        || true
-
-    # 检测是否真的需要重新安装 GRUB
-    local need_reinstall=false
-    if [[ "$boot_mode" == "uefi" ]]; then
-        efibootmgr 2>/dev/null | grep -qi "debian\|grub" || need_reinstall=true
-    else
-        if [[ -n "$boot_disk" ]]; then
-            $USE_SUDO dd if="$boot_disk" bs=512 count=1 2>/dev/null \
-                | strings | grep -q GRUB || need_reinstall=true
-        fi
-    fi
-
-    if [[ "$need_reinstall" == "true" ]]; then
-        log_info "GRUB 需要重新安装"
-        if [[ "$boot_mode" == "uefi" ]]; then
-            DEBIAN_FRONTEND=noninteractive $USE_SUDO apt-get install -y \
-                grub-efi-amd64 grub-efi-amd64-bin efibootmgr 2>/dev/null || true
-            if [[ -d /boot/efi ]]; then
-                $USE_SUDO grub-install --target=x86_64-efi \
-                    --efi-directory=/boot/efi \
-                    --bootloader-id=debian --recheck 2>/dev/null || \
-                    log_warning "GRUB EFI 安装失败"
-            fi
-        else
-            if [[ -n "$boot_disk" ]]; then
-                DEBIAN_FRONTEND=noninteractive $USE_SUDO apt-get install -y \
-                    grub-pc grub-pc-bin 2>/dev/null || true
-                $USE_SUDO grub-install --target=i386-pc --recheck "$boot_disk" 2>/dev/null || {
-                    log_warning "GRUB 安装失败，尝试 dpkg-reconfigure"
-                    echo "grub-pc grub-pc/install_devices multiselect $boot_disk" \
-                        | $USE_SUDO debconf-set-selections
-                    DEBIAN_FRONTEND=noninteractive $USE_SUDO dpkg-reconfigure grub-pc 2>/dev/null || true
-                }
-            fi
-        fi
-        $USE_SUDO update-grub 2>/dev/null || true
-    else
-        log_info "GRUB 已正确安装，跳过重新安装"
-    fi
+    log_success "附加 APT 源已备份并禁用；升级后请逐项检查再恢复"
 }
 
 # ── 系统环境检查 ──────────────────────────────────────────────────────────────
@@ -453,8 +377,7 @@ check_system() {
         local boot_kb
         boot_kb=$(df /boot | awk 'NR==2{print $4}')
         if (( boot_kb < 204800 )); then
-            log_warning "/boot 可用空间不足 200MB，先清理旧内核"
-            clean_old_kernels
+            log_warning "/boot 可用空间不足 200MB，请在升级前人工核对并清理旧内核"
         fi
     fi
 
@@ -482,26 +405,56 @@ check_root() {
     fi
 }
 
+wait_for_apt_locks() {
+    local timeout="${APT_LOCK_TIMEOUT:-300}"
+    local waited=0
+    local locks=(
+        /var/lib/dpkg/lock-frontend
+        /var/lib/dpkg/lock
+        /var/cache/apt/archives/lock
+        /var/lib/apt/lists/lock
+    )
+
+    command -v fuser >/dev/null 2>&1 || {
+        log_warning "未安装 fuser，无法主动检查 APT 锁；继续前请确保没有其他包管理进程"
+        return 0
+    }
+
+    while $USE_SUDO fuser "${locks[@]}" >/dev/null 2>&1; do
+        if (( waited >= timeout )); then
+            log_error "等待 APT/dpkg 锁超时（${timeout}s），请先结束正在运行的包管理任务"
+            return 1
+        fi
+        (( waited % 15 == 0 )) && log_info "APT/dpkg 正忙，等待锁释放... (${waited}s/${timeout}s)"
+        sleep 3
+        ((waited += 3))
+    done
+}
+
+stop_apt_units() {
+    command -v systemctl >/dev/null 2>&1 || return 0
+    local unit
+    for unit in apt-daily.timer apt-daily-upgrade.timer apt-daily.service \
+        apt-daily-upgrade.service unattended-upgrades.service; do
+        if systemctl is-active --quiet "$unit"; then
+            $USE_SUDO systemctl stop "$unit"
+            STOPPED_APT_UNITS+=("$unit")
+        fi
+    done
+}
+
 # ── 升级前准备 ────────────────────────────────────────────────────────────────
 pre_upgrade_preparation() {
     local target_codename="$1"
     log_info "执行升级前准备工作..."
 
-    # 停止自动更新服务，避免锁冲突
-    for svc in unattended-upgrades apt-daily apt-daily-upgrade; do
-        systemctl is-active "$svc" >/dev/null 2>&1 \
-            && $USE_SUDO systemctl stop "$svc" 2>/dev/null || true
-    done
-
-    # 清理 APT 锁文件
-    $USE_SUDO rm -f /var/lib/dpkg/lock-frontend \
-                    /var/lib/dpkg/lock \
-                    /var/cache/apt/archives/lock \
-                    /var/lib/apt/lists/lock 2>/dev/null || true
+    stop_apt_units
+    wait_for_apt_locks
 
     # 修复 dpkg / 损坏依赖
-    $USE_SUDO dpkg --configure -a 2>/dev/null || true
-    DEBIAN_FRONTEND=noninteractive $USE_SUDO apt-get --fix-broken install -y 2>/dev/null || true
+    $USE_SUDO dpkg --audit
+    $USE_SUDO dpkg --configure -a
+    DEBIAN_FRONTEND=noninteractive $USE_SUDO apt-get --fix-broken install -y
 
     # 关键步骤：清理旧/无效 sources，避免 404
     clean_apt_sources "$target_codename"
@@ -546,82 +499,15 @@ post_upgrade_fixes() {
             || $USE_SUDO update-initramfs -u -k "$kver" 2>/dev/null || true
     done < <(ls /boot/vmlinuz-* 2>/dev/null | sed 's|/boot/vmlinuz-||')
 
-    # 重装 GRUB 包
-    local boot_mode
-    boot_mode=$(detect_boot_mode)
-    if [[ "$boot_mode" == "uefi" ]]; then
-        DEBIAN_FRONTEND=noninteractive $USE_SUDO apt-get install --reinstall -y \
-            grub-efi-amd64 grub-efi-amd64-bin 2>/dev/null || true
-    else
-        DEBIAN_FRONTEND=noninteractive $USE_SUDO apt-get install --reinstall -y \
-            grub-pc grub-pc-bin 2>/dev/null || true
+    # 发行版升级不应无条件重装引导器或写入 MBR，仅刷新配置。
+    if command -v update-grub >/dev/null 2>&1; then
+        log_info "刷新 GRUB 配置（不写入磁盘引导区）"
+        $USE_SUDO update-grub || log_warning "GRUB 配置刷新失败，可稍后显式运行 --fix-grub"
     fi
 
-    # GRUB 配置更新（保守模式）
-    if [[ ! -f /boot/grub/grub.cfg ]] || [[ ! -s /boot/grub/grub.cfg ]]; then
-        log_warning "GRUB 配置缺失，执行修复"
-        update_grub_safe
-    else
-        log_info "更新 GRUB 配置（保守模式）"
-        $USE_SUDO update-grub 2>/dev/null || true
-    fi
-
-    # 执行额外 GRUB 修复（提升 VPS 兼容性）
-    log_info "执行额外 GRUB 修复..."
-    local boot_disk
-    boot_disk=$(detect_boot_disk)
-    if [[ -n "$boot_disk" ]]; then
-        if [[ "$boot_mode" == "uefi" ]]; then
-            # UEFI：额外创建 removable 和 fallback 引导入口，提升云/VPS 兼容性
-            if [[ -d /boot/efi/EFI ]]; then
-                $USE_SUDO grub-install --target=x86_64-efi \
-                    --efi-directory=/boot/efi \
-                    --bootloader-id=debian \
-                    --force-extra-removable 2>/dev/null || true
-                $USE_SUDO grub-install --target=x86_64-efi \
-                    --efi-directory=/boot/efi \
-                    --removable 2>/dev/null || true
-            fi
-        else
-            # BIOS：强制覆写 MBR bootsector，再重装 GRUB，确保引导链完整
-            log_info "BIOS 模式：强制写入 MBR bootsector"
-            $USE_SUDO dd if=/usr/lib/grub/i386-pc/boot.img \
-                of="$boot_disk" bs=446 count=1 2>/dev/null || true
-            $USE_SUDO grub-install --force --recheck "$boot_disk" 2>/dev/null || {
-                log_warning "标准安装失败，尝试 --force-file-id"
-                $USE_SUDO grub-install --force-file-id "$boot_disk" 2>/dev/null || true
-            }
-        fi
-    fi
-
-    # 最终 GRUB 配置刷新
-    $USE_SUDO update-grub 2>/dev/null || true
-
-    # 验证 GRUB
-    if [[ "$boot_mode" == "bios" ]]; then
-        local entries
-        entries=$(grep -c "menuentry " /boot/grub/grub.cfg 2>/dev/null || echo 0)
-        if (( entries == 0 )); then
-            log_warning "GRUB 配置无启动项，重新生成"
-            $USE_SUDO grub-mkconfig -o /boot/grub/grub.cfg 2>/dev/null || true
-        else
-            log_success "GRUB 启动项数量: $entries"
-        fi
-    else
-        efibootmgr 2>/dev/null | grep -qi "debian" \
-            && log_success "EFI 引导项检查通过" \
-            || log_warning "未检测到 debian EFI 引导项，可能需手动修复"
-    fi
-
-    # 清理残留包
-    $USE_SUDO apt-get autoremove -y --purge 2>/dev/null || true
+    # 保留自动安装的包，避免在刚完成升级时误删仍需人工核对的依赖。
+    log_info "跳过自动 autoremove；确认服务正常后可手动执行 apt-get autoremove --purge"
     $USE_SUDO apt-get autoclean 2>/dev/null || true
-
-    # 重启关键网络服务
-    for svc in ssh sshd networking systemd-networkd NetworkManager; do
-        systemctl is-enabled "$svc" >/dev/null 2>&1 \
-            && $USE_SUDO systemctl restart "$svc" 2>/dev/null || true
-    done
 
     sync; sync; sync
     log_success "升级后修复完成"
@@ -651,9 +537,9 @@ safe_reboot() {
     for i in 5 4 3 2 1; do echo -n "$i... "; sleep 1; done; echo
 
     if command -v systemctl >/dev/null 2>&1; then
-        $USE_SUDO systemctl reboot --force
+        $USE_SUDO systemctl reboot
     else
-        $USE_SUDO reboot -f
+        $USE_SUDO reboot
     fi
 }
 
@@ -679,18 +565,18 @@ show_help() {
   --mirror <cn|tuna|ustc>  使用国内镜像源
 
 ✨ 功能特性:
-  ✅ 自动检测并逐级升级 Debian 8 → 13
-  ✅ 升级前自动清理无效 backports / 第三方源
+  ✅ 自动检测并逐级升级 Debian 11 → 12 → 13
+  ✅ 升级前备份并禁用 backports / 第三方源
   ✅ 兼容 UEFI / BIOS，支持 NVMe、virtio、xen 磁盘
-  ✅ 网络接口名称变化自动修复
+  ✅ 备份并核对网络接口，不自动改名或重启网络
   ✅ /boot 空间不足时自动清理旧内核
-  ✅ 保守的 GRUB 策略，避免误操作 MBR
+  ✅ 默认只刷新 GRUB 配置，不写入 MBR
   ✅ 国内镜像源一键切换
 
 🔄 升级路径:
-  Debian 8 (Jessie) → 9 (Stretch) → 10 (Buster)
-            → 11 (Bullseye) → 12 (Bookworm) → 13 (Trixie) [当前稳定版，2025-08-09]
-            → 14 (Forky)    [testing，需 --allow-testing]
+  Debian 11 (Bullseye) → 12 (Bookworm) → 13 (Trixie) [当前稳定版]
+                         → 14 (Forky)    [testing，需 --allow-testing]
+  Debian 8-10 的历史脚本仅供迁移研究，不属于当前生产支持范围
 
 💻 示例:
   $0                           # 自动升级到下一稳定版
@@ -725,8 +611,13 @@ check_upgrade() {
     echo "  当前版本: Debian $cur ($cur_name) [$cur_stat]"
 
     if [[ -z "$nxt" ]]; then
-        echo "  状    态: ✅ 已是最新稳定版本"
-        echo "  提    示: 可用 --allow-testing 升级到 Debian 14 (forky) [testing]"
+        if (( cur < 11 )); then
+            echo "  状    态: 已归档，不属于统一主脚本的自动升级范围"
+            echo "  提    示: 请阅读 scripts/README.md 和 Debian 官方 Release Notes"
+        else
+            echo "  状    态: ✅ 已是最新稳定版本"
+            echo "  提    示: 可用 --allow-testing 升级到 Debian 14 (forky) [testing]"
+        fi
     else
         nxt_info=$(get_version_info "$nxt")
         nxt_name=$(echo "$nxt_info" | cut -d'|' -f1)
@@ -796,6 +687,11 @@ main_upgrade() {
     cur=$(get_current_version)
     if [[ -z "$cur" ]]; then
         log_error "无法检测当前版本，退出"
+        exit 1
+    fi
+    if (( cur < 11 )); then
+        log_error "Debian $cur 已进入归档范围，统一主脚本不再自动升级该版本"
+        log_error "请阅读 scripts/README.md 和对应 Debian Release Notes，制定分阶段迁移方案"
         exit 1
     fi
 
@@ -879,17 +775,18 @@ EOF
     # ── 步骤 2：更新包列表 ────────────────────────────────────────────────────
     log_info "步骤 2/4: 更新软件包列表"
     # 允许部分失败（如残留第三方源），继续升级
-    $USE_SUDO apt-get update 2>&1 | tee /tmp/apt_update.log || {
+    mkdir -p "$RUN_DIR"
+    $USE_SUDO apt-get update 2>&1 | tee "$APT_UPDATE_LOG" || {
         log_warning "apt-get update 出现错误（见上），检查是否可继续..."
         # 如果是 Release 文件不存在（404），属于已清理源的残留，可忽略
-        if grep -q "404\|Release.*does not have" /tmp/apt_update.log; then
+        if grep -q "404\|Release.*does not have" "$APT_UPDATE_LOG"; then
             log_warning "检测到 404 错误，尝试再次清理无效源后重试"
             # 禁用所有 sources.list.d 中的第三方源
-            find /etc/apt/sources.list.d/ -maxdepth 1 -name "*.list" \
-                -not -name "*.disabled" 2>/dev/null \
+            find /etc/apt/sources.list.d/ -maxdepth 1 -type f \
+                \( -name "*.list" -o -name "*.sources" \) 2>/dev/null \
                 | while read -r f; do
                     log_warning "  禁用: $f"
-                    $USE_SUDO mv "$f" "${f}.disabled" 2>/dev/null || true
+                    $USE_SUDO mv "$f" "${f}.disabled-by-debian-upgrade" 2>/dev/null || true
                 done
             $USE_SUDO apt-get update || {
                 log_error "软件包列表更新失败，请检查网络或手动修复源配置"
@@ -975,8 +872,7 @@ fix_grub_quick() {
         || $USE_SUDO grub-mkconfig -o /boot/grub/grub.cfg 2>/dev/null || true
 
     if [[ ! -f /boot/grub/grub.cfg ]]; then
-        log_warning "GRUB 配置不存在，执行完整修复"
-        update_grub_safe
+        log_warning "GRUB 配置不存在；请确认引导磁盘后显式运行: $0 --fix-grub"
     fi
 
     sync; sync
@@ -1065,16 +961,15 @@ fix_only_mode() {
     log_info "🔧 系统修复模式"
     log_info "═══════════════════════════════════════════"
 
-    log_info "1/4 清理 APT 锁文件"
-    $USE_SUDO rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock \
-                    /var/cache/apt/archives/lock /var/lib/apt/lists/lock 2>/dev/null || true
+    log_info "1/4 等待 APT/dpkg 锁释放"
+    wait_for_apt_locks
 
     log_info "2/4 修复 dpkg 状态"
     $USE_SUDO dpkg --configure -a 2>/dev/null || true
     DEBIAN_FRONTEND=noninteractive $USE_SUDO apt-get --fix-broken install -y 2>/dev/null || true
 
-    log_info "3/4 修复 GRUB"
-    update_grub_safe
+    log_info "3/4 刷新 GRUB 配置"
+    fix_grub_quick
 
     log_info "4/4 清理旧内核"
     clean_old_kernels
@@ -1092,17 +987,15 @@ error_recovery() {
     log_info "尝试基本恢复..."
     $USE_SUDO dpkg --configure -a 2>/dev/null || true
     $USE_SUDO apt-get --fix-broken install -y 2>/dev/null || true
-    $USE_SUDO rm -f /var/lib/dpkg/lock* /var/cache/apt/archives/lock 2>/dev/null || true
     log_info "基本恢复完成，建议运行: $0 --fix-only"
 }
 
 # ── 清理退出 ──────────────────────────────────────────────────────────────────
 cleanup() {
-    rm -f /tmp/apt_update.log /tmp/grub_install.log 2>/dev/null || true
-    for svc in unattended-upgrades apt-daily apt-daily-upgrade; do
-        systemctl list-unit-files "$svc.service" >/dev/null 2>&1 \
-            && systemctl is-active "$svc" >/dev/null 2>&1 \
-            || $USE_SUDO systemctl start "$svc" 2>/dev/null || true
+    rm -rf "$RUN_DIR" 2>/dev/null || true
+    local unit
+    for unit in "${STOPPED_APT_UNITS[@]}"; do
+        $USE_SUDO systemctl start "$unit" 2>/dev/null || true
     done
 }
 trap cleanup EXIT
@@ -1146,4 +1039,6 @@ main() {
     main_upgrade
 }
 
-[[ "${BASH_SOURCE[0]}" == "${0}" ]] && main "$@"
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi
