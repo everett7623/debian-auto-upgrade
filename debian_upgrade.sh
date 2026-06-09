@@ -70,6 +70,7 @@ set -Ee -o pipefail
 SCRIPT_VERSION="3.5"
 SCRIPT_NAME="debian_upgrade.sh"
 SCRIPT_DATE="2026-06-10"
+SCRIPT_REPO="https://raw.githubusercontent.com/everett7623/debian-auto-upgrade/main/debian_upgrade.sh"
 RUN_ID="$(date +%Y%m%d_%H%M%S)_$$"
 RUN_DIR="${TMPDIR:-/tmp}/debian-auto-upgrade-${RUN_ID}"
 APT_UPDATE_LOG="${RUN_DIR}/apt-update.log"
@@ -686,6 +687,7 @@ show_help() {
   --fix-only            仅修复系统，不升级
   --fix-grub            专门修复 GRUB 引导
   --cleanup             清理升级后的系统垃圾（旧内核、废弃包、残留配置）
+  --self-update         从 GitHub 下载最新版本替换当前脚本
   --force               跳过所有确认提示
   --stable-only         仅升级到稳定版（默认，跳过 testing）
   --allow-testing       允许升级到 Debian 14 Forky（testing）
@@ -715,6 +717,7 @@ show_help() {
   $0 --allow-testing --force   # 强制升级到 Forky，跳过确认
   $0 --fix-grub                # 修复引导问题
   $0 --cleanup                 # 清理升级后残留（旧内核、废弃包）
+  $0 --self-update             # 自动更新到脚本最新版本
   $0 --debug                   # 调试模式
 
 ⚠️  注意:
@@ -1219,6 +1222,63 @@ cleanup_mode() {
     log_success "═══════════════════════════════════════════"
 }
 
+# ── 脚本自更新 ──────────────────────────────────────────────────────────────────
+self_update_mode() {
+    log_info "═══════════════════════════════════════════"
+    log_info "🔄 检查并更新脚本"
+    log_info "═══════════════════════════════════════════"
+
+    local tmp_file
+    tmp_file="$(mktemp)"
+    log_info "当前版本: v${SCRIPT_VERSION}"
+    log_info "下载最新版本..."
+
+    if wget -q --timeout=30 -O "$tmp_file" "$SCRIPT_REPO" 2>/dev/null; then
+        local remote_version
+        remote_version=$(grep '^SCRIPT_VERSION=' "$tmp_file" | head -1 | cut -d'"' -f2)
+        if [[ -z "$remote_version" ]]; then
+            log_error "无法解析远程版本，请手动下载: $SCRIPT_REPO"
+            rm -f "$tmp_file"
+            return 1
+        fi
+
+        log_info "远程版本: v${remote_version}"
+
+        if [[ "$remote_version" == "$SCRIPT_VERSION" ]]; then
+            log_success "已是最新版本 v${SCRIPT_VERSION}"
+            rm -f "$tmp_file"
+            return 0
+        fi
+
+        # 预检远程脚本语法
+        if ! bash -n "$tmp_file" 2>/dev/null; then
+            log_error "远程脚本语法检查失败，拒绝更新"
+            rm -f "$tmp_file"
+            return 1
+        fi
+
+        # 备份当前脚本
+        local backup
+        backup="$(dirname "$(realpath "$0")")/${SCRIPT_NAME}.v${SCRIPT_VERSION}.bak"
+        cp "$(realpath "$0")" "$backup" 2>/dev/null || true
+        log_info "已备份当前版本: $backup"
+
+        # 替换并保持权限
+        cat "$tmp_file" > "$(realpath "$0")"
+        chmod +x "$(realpath "$0")"
+        rm -f "$tmp_file"
+
+        log_success "═══════════════════════════════════════════"
+        log_success "🎉 更新完成: v${SCRIPT_VERSION} → v${remote_version}"
+        log_success "═══════════════════════════════════════════"
+        log_info "重新运行以使用新版本: $0 --help"
+    else
+        log_error "下载失败，请检查网络或手动下载: $SCRIPT_REPO"
+        rm -f "$tmp_file"
+        return 1
+    fi
+}
+
 preflight_mode() {
     log_info "执行升级前深度检查（不会切换软件源或升级软件包）..."
     wait_for_apt_locks
@@ -1274,6 +1334,7 @@ main() {
             -c|--check)   check_upgrade; exit 0 ;;
             --preflight)  check_root; check_system; preflight_mode; exit 0 ;;
             --cleanup)    check_root; check_system; cleanup_mode; exit 0 ;;
+            --self-update) self_update_mode; exit 0 ;;
             -d|--debug)   export DEBUG=1; log_debug "调试模式已启用"; shift ;;
             --fix-only)   check_root; check_system; fix_only_mode; exit 0 ;;
             --fix-grub)   check_root; fix_grub_mode; exit 0 ;;

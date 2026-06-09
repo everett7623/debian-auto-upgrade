@@ -7,7 +7,7 @@
 [![CI](https://github.com/everett7623/debian-auto-upgrade/actions/workflows/ci.yml/badge.svg)](https://github.com/everett7623/debian-auto-upgrade/actions/workflows/ci.yml)
 [![Debian](https://img.shields.io/badge/Debian-11--13-red.svg)](https://www.debian.org/)
 [![Bash](https://img.shields.io/badge/Language-Bash-green.svg)](https://www.gnu.org/software/bash/)
-[![Version](https://img.shields.io/badge/Version-3.3.1-brightgreen.svg)](https://github.com/everett7623/debian-auto-upgrade/releases)
+[![Version](https://img.shields.io/badge/Version-3.5-brightgreen.svg)](https://github.com/everett7623/debian-auto-upgrade/releases)
 
 专为 Debian 系统打造的自动化升级脚本，支持从旧版本安全逐级升级到最新稳定版本。针对 VPS 环境深度优化，具备完善的错误恢复与容错能力。
 
@@ -95,6 +95,8 @@ sudo ./debian_upgrade.sh --help
 | `-d, --debug` | 启用调试模式，输出详细诊断信息 |
 | `--fix-only` | 修复 dpkg、依赖和 GRUB 配置，不执行升级 |
 | `--fix-grub` | 显式执行 GRUB 引导修复 |
+| `--cleanup` | 清理升级后的系统垃圾（旧内核、废弃包、残留配置） |
+| `--self-update` | 从 GitHub 下载最新版本替换当前脚本 |
 | `--force` | 跳过所有确认提示（慎用） |
 | `--stable-only` | 仅升级到稳定版（默认，推荐） |
 | `--allow-testing` | 允许升级到 Debian 14 Forky（testing） |
@@ -140,6 +142,24 @@ sudo ./debian_upgrade.sh --fix-only
 # 专门修复 GRUB 引导（确认目标磁盘后使用）
 sudo ./debian_upgrade.sh --fix-grub
 ```
+
+### 升级后清理与维护
+
+```bash
+# 清理升级后残留（旧内核、废弃包、rc 配置、APT 缓存、.dpkg-*）
+sudo ./debian_upgrade.sh --cleanup
+
+# 自动更新脚本到最新版本
+sudo ./debian_upgrade.sh --self-update
+```
+
+`--cleanup` 执行五步清理，前后显示磁盘用量对比：
+
+1. `apt-get autoremove --purge` — 废弃包和孤立依赖
+2. `dpkg --purge` — 已删除但残留配置的 rc 状态包
+3. 移除旧内核（保留当前运行和最新安装的内核）
+4. `apt-get clean` + `autoclean` — APT 包缓存
+5. 删除 `/etc/` 下的 `.dpkg-old` / `.dpkg-dist` / `.dpkg-bak`
 
 ## 🌍 国内镜像源
 
@@ -413,6 +433,8 @@ systemctl status networking systemd-networkd NetworkManager
 
 | 版本 | 日期 | 主要变更 |
 |------|------|----------|
+| **v3.5** | 2026-06-10 | 新增 `--cleanup`（升级后五步清理）和 `--self-update`（从 GitHub 自动更新）；修复跨版本 GPG 签名验证和云镜像 initramfs 预检失败 |
+| **v3.4** | 2026-06-10 | 代码审查：修复 dpkg ERR 陷阱、lsblk 显示缺陷、forky 检测缺失、GPG 密钥环错误；注释全面中文化 |
 | **v3.3.1** | 2026-06-09 | 修复失败后重复执行导致耗时过长：新增 initramfs/动态库预检与 `--preflight`；首次升级失败立即停止；精简 APT 索引；跳过重复 initramfs 重建 |
 | **v3.3** | 2026-06-09 | 安全加固：等待 APT 锁正常释放；支持 `.sources`；取消默认改网卡、重启网络、写 MBR 和 `autoremove`；补充测试、CI 与开发文档 |
 | **v3.2** | 2026-06-01 | 更新 Debian 13 Trixie 为正式稳定版：12→13 直接升级无需 `--allow-testing`，13→14 (Forky) 需 `--allow-testing`，同步更新 README |
