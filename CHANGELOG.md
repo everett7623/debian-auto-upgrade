@@ -1,185 +1,149 @@
-# Changelog
+# 更新日志
 
-## [Unreleased]
+本文件记录 Debian Auto Upgrade Tool 的正式版本变更。
 
-### Documentation
-- Restored the original README structure, examples, support information, acknowledgements, and version history while retaining the v3.3 safety corrections.
+格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本编号与 README 的版本历史保持一致。
 
-## [3.3.0] - 2026-06-09
+## 未发布
 
-### Changed
-- Wait for APT/dpkg locks instead of deleting lock files.
-- Back up and disable both `.list` and Deb822 `.sources` repositories.
-- Keep logs on stderr so command substitutions return clean values.
-- Stop automatic network renaming, network service restarts, MBR writes, and post-upgrade autoremove.
-- Use an isolated per-run temporary directory and restore only services stopped by the script.
-- Refresh README from the original structure and add development, contribution, security, testing, and CI documentation.
+### 文档
 
-### Fixed
-- Preserve the backup directory value when debug logging is enabled.
-- Write root-owned network snapshots through `sudo tee`.
-- Correct `find` expression precedence when cleaning `.old` and `.bak` files.
+- 基于原版 README 恢复全部章节、示例、支持方式、致谢和完整版本历史。
+- 统一 README 与 CHANGELOG 的版本编号、发布日期和主要变更。
 
-All notable changes to this project will be documented in this file.
+## v3.3 - 2026-06-09
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+### 安全
 
-## [2.2] - 2025-05-27
+- 等待 APT/dpkg 锁正常释放，不再直接删除仍可能被进程占用的锁文件。
+- 常规升级流程不再自动修改网卡名称或重启网络服务。
+- 常规升级流程不再写入 MBR 或无条件重装 GRUB。
+- 升级完成后不再自动执行 `autoremove`，避免误删仍需人工核对的依赖。
+- 只恢复脚本本次主动停止的自动更新单元。
 
-### Fixed
-- Fixed critical syntax error in `smart_update_packages()` function (line 68)
-- Fixed missing main function call that prevented script execution
-- Added proper script entry point with source detection
-- Resolved function structure issues and incomplete code blocks
+### 新增
 
-### Improved
-- Enhanced error handling and recovery mechanisms
-- Better script initialization and cleanup procedures
-- Improved compatibility with direct execution vs sourcing
+- 支持识别、备份并禁用 Deb822 `.sources` 软件源。
+- 新增独立的单次运行临时目录，避免固定临时文件冲突。
+- 新增 Bash 冒烟测试和危险操作模式检查。
+- 新增 GitHub Actions CI、`Makefile`、EditorConfig 和 Git 属性配置。
+- 新增贡献指南、安全策略、开发指南、安全边界及历史脚本说明。
 
-### Technical Details
-- Removed erroneous `log_info` call at function start
-- Added proper `main "$@"` call with source detection guard
-- Fixed all syntax validation issues reported by `bash -n`
+### 修复
 
-## [2.1] - 2025-05-26
+- 日志改为写入标准错误，避免 `--debug` 输出污染命令替换结果。
+- 使用 `sudo tee` 正确写入 root 所有的网络配置快照。
+- 修复清理 `/boot` 中 `.old` 和 `.bak` 文件时的 `find` 条件优先级。
+- 修复脚本被 `source` 时入口保护返回非零并触发调用方 `set -e` 的问题。
 
-### Added
-- Smart version control system
-- Enhanced testing version warnings with explicit confirmation
-- Improved user input validation and confirmation dialogs
-- Better risk assessment for different upgrade paths
+### 文档
 
-### Changed
-- Modified upgrade confirmation process for testing versions
-- Enhanced warning messages for non-stable version upgrades
-- Updated user interface with better formatting and colors
+- 基于原版结构更新 README，保留原有功能介绍、升级路径、使用示例、故障排查、支持方式和版本历史。
+- 明确统一主脚本支持 Debian 11-13；Debian 8-10 脚本仅作为历史迁移参考。
 
-### Fixed
-- Input handling fixes for user confirmations
-- Improved error messages and user feedback
-- Better handling of edge cases in version detection
+## v3.2 - 2026-06-01
 
-## [2.0] - 2025-05-25
+### 变更
 
-### Added
-- Complete rewrite with advanced VPS optimization
-- Intelligent geographic mirror selection
-- Progressive upgrade strategy (minimal → safe → full)
-- Comprehensive system backup before upgrades
-- Advanced error recovery and fault tolerance
-- Detailed logging with colorized output and timestamps
-- System verification before and after upgrades
-- Support for multiple virtualization environments
-- Automatic detection of cloud providers (AWS, Alibaba, etc.)
+- 更新 Debian 13 Trixie 状态为正式稳定版。
+- Debian 12 → 13 升级不再需要 `--allow-testing`。
+- Debian 13 → 14 Forky 升级需要显式使用 `--allow-testing`。
+- 更新帮助信息、升级路径说明和 README。
 
-### Enhanced
-- VPS environment detection and optimization
-- APT issue resolution and dependency fixing
-- Network connectivity handling with multiple retry mechanisms
-- GPG key management and security updates
-- Locale and timezone configuration
-- DNS configuration fixes
+## v3.1 - 2026-06-01
 
-### Security
-- Enhanced security checks and validations
-- Improved backup and recovery procedures
-- Better handling of testing/unstable version upgrades
-- Explicit confirmation requirements for risky operations
+### 修复
 
-## [1.5] - 2025-05-20
+- 修复 Debian 12 已是最新稳定版时升级提示不显示的问题。
+- 修正 `main_upgrade()` 中提示逻辑的判断条件。
 
-### Added
-- Basic VPS environment detection
-- Simple mirror selection based on geography
-- Backup functionality for critical files
+### 变更
 
-### Fixed
-- APT lock file handling
-- Basic dependency resolution
-- Network connectivity issues
+- 更新 Debian 13 Trixie 的版本状态说明。
+- 更新 `--help` 中的升级路径。
 
-## [1.0] - 2025-05-15
+## v3.0 - 2026-04-02
 
-### Added
-- Initial release with basic upgrade functionality
-- Support for Debian 8-12 upgrade paths
-- Basic error handling and logging
-- Command-line options for different upgrade modes
-- Simple version detection and upgrade planning
+### 变更
 
-### Features
-- Progressive upgrade from older Debian versions
-- Basic system checks before upgrade
-- Simple backup of sources.list
-- Command-line interface with help system
+- 全面重构统一升级脚本，提高健壮性与兼容性。
+- 统一关键步骤的错误处理和恢复流程。
+- 改进 Debian 版本检测及升级目标判断。
 
----
+### 新增
 
-## Version Support Matrix
+- 新增 `--mirror`，支持阿里云、清华大学和中科大镜像。
+- 新增磁盘空间和 `/boot` 空间预检。
+- 新增 APT 源备份、旧 backports 处理及第三方源清理。
+- 新增 UEFI/BIOS、NVMe、virtio 和 Xen 引导磁盘检测。
+- 新增完整帮助信息、调试日志和升级前后验证。
 
-| Version | Debian Support | VPS Optimization | Mirror Selection | Advanced Features |
-|---------|----------------|------------------|------------------|-------------------|
-| 2.2     | 8-13          | ✅ Full          | ✅ Geographic    | ✅ Complete       |
-| 2.1     | 8-13          | ✅ Full          | ✅ Geographic    | ✅ Enhanced       |
-| 2.0     | 8-13          | ✅ Full          | ✅ Geographic    | ✅ Full           |
-| 1.5     | 8-12          | ⚠️ Basic         | ⚠️ Limited       | ⚠️ Partial        |
-| 1.0     | 8-11          | ❌ None          | ❌ None          | ❌ Basic          |
+### 修复
 
-## Upgrade Notes
+- 修复 `sources.list.d/` 中旧源残留导致的 APT 冲突和 404。
+- 改进 GRUB 检测逻辑，减少误判和过度修复。
+- 改进部分 VPS 无法正确识别 Debian 版本的问题。
 
-### From v2.1 to v2.2
-- **Critical**: This version fixes a major syntax error that prevented script execution
-- **Action Required**: Replace your existing script file with the new version
-- **Compatibility**: All existing command-line options remain the same
-- **Testing**: Run `bash -n debian_upgrade.sh` to verify syntax before use
+## v2.6 - 2024-12-01
 
-### From v2.0 to v2.1
-- **Enhanced**: Better user experience with improved confirmations
-- **Security**: More explicit warnings for testing version upgrades
-- **Compatibility**: Fully backward compatible with v2.0
+### 修复
 
-### From v1.x to v2.x
-- **Breaking**: Complete rewrite - backup your custom modifications
-- **Enhanced**: Significantly improved functionality and safety
-- **Migration**: Review new command-line options and features
-- **Testing**: Test thoroughly in development environment before production use
+- 修复 GRUB 过度修复问题。
+- 改进重启前的二次确认机制。
+- 降低自动引导修复对 VPS 启动配置的影响。
 
-## Security Advisories
+## v2.5 - 2024-11-01
 
-### SA-2025-001 (Fixed in v2.2)
-- **Issue**: Syntax error could cause script to fail silently
-- **Impact**: Medium - Script would not execute properly
-- **Resolution**: Update to v2.2 or later
-- **Workaround**: Manual syntax fix if update not possible
+### 新增
 
-### SA-2025-002 (Fixed in v2.1)  
-- **Issue**: Insufficient warnings for testing version upgrades
-- **Impact**: Low - Users might accidentally upgrade to unstable versions
-- **Resolution**: Enhanced confirmation process in v2.1
-- **Mitigation**: Use `--stable-only` flag for production systems
+- 新增网络接口配置、IP 地址和路由信息备份。
+- 新增升级后网络配置检查与恢复辅助。
+- 新增旧内核清理，用于释放 `/boot` 空间。
 
-## Future Roadmap
+## v2.0 - 2024-06-01
 
-### v2.3 (Planned)
-- [ ] Enhanced container support (Docker, LXC)
-- [ ] Improved rollback mechanisms
-- [ ] Integration with configuration management tools
-- [ ] Better handling of custom repositories
+### 新增
 
-### v2.4 (Planned)
-- [ ] Web interface for monitoring upgrades
-- [ ] Email notifications for upgrade status
-- [ ] Scheduled upgrade capabilities
-- [ ] Advanced reporting and analytics
+- 新增 UEFI 与 BIOS 启动模式自动检测。
+- 新增 NVMe、virtio 和 Xen 磁盘支持。
+- 改进 GRUB 安装磁盘识别。
+- 增强 VPS 和虚拟机环境兼容性。
 
-### v3.0 (Future)
-- [ ] Support for other Debian-based distributions
-- [ ] Graphical user interface
-- [ ] Plugin system for custom extensions
-- [ ] Enterprise features and support
+## v1.0 - 2024-01-01
+
+### 新增
+
+- 发布初始版本。
+- 提供 Debian 基础版本检测和相邻版本升级流程。
+- 提供 APT 源更新、软件包升级及基础错误处理。
+- 提供命令行帮助和升级确认。
 
 ---
 
-For detailed technical information about each release, see the [GitHub Releases](https://github.com/everett7623/debian-auto-upgrade/releases) page.
+## 版本支持说明
+
+| 工具版本 | 主脚本 Debian 支持范围 | 说明 |
+|---|---|---|
+| 3.3.x | Debian 11-13 | 当前维护版本；Debian 14 仅实验性支持 |
+| 3.0.x-3.2.x | Debian 8-13 | 历史统一脚本版本 |
+| 2.x | Debian 8-12 | 历史版本，安全行为和版本状态可能已过时 |
+| 1.x | Debian 8-11 | 初始版本，不建议继续使用 |
+
+Debian 8-10 已进入归档范围。仓库 `scripts/` 中的分版本脚本仅供历史追踪和迁移设计参考，不作为当前生产入口。
+
+## 升级说明
+
+### 从 v3.2 升级到 v3.3
+
+- 建议直接替换现有 `debian_upgrade.sh`。
+- 命令行参数保持兼容。
+- 第三方 `.list` 和 `.sources` 会在升级前备份并禁用。
+- 常规升级不再自动写入 MBR、重启网络或执行 `autoremove`。
+- 执行前仍应创建系统快照并确认控制台访问可用。
+
+### 从 v2.x 升级到 v3.x
+
+- v3 对升级流程和安全边界进行了较大调整。
+- 请重新阅读 README 的支持范围和升级前检查清单。
+- 不要沿用旧版脚本对 APT 锁、网络服务和 GRUB 的自动处理假设。
+- 生产使用前应在可回滚的 Debian 虚拟机中完成验证。
