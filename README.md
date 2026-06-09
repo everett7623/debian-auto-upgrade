@@ -1,52 +1,55 @@
-# Debian Auto Upgrade Tool
+# 🚀 Debian Auto Upgrade Tool
 
-面向 Debian 服务器和 VPS 的逐版本升级辅助脚本。项目会检测当前版本、备份关键配置、暂时禁用附加 APT 源，并按 Debian 发行版顺序执行升级。
+> 专为 Debian 系统设计的智能逐级升级工具，支持 VPS 环境优化、自动错误修复与保守升级策略
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![GitHub release](https://img.shields.io/github/release/everett7623/debian-auto-upgrade.svg)](https://github.com/everett7623/debian-auto-upgrade/releases)
 [![CI](https://github.com/everett7623/debian-auto-upgrade/actions/workflows/ci.yml/badge.svg)](https://github.com/everett7623/debian-auto-upgrade/actions/workflows/ci.yml)
-[![Debian](https://img.shields.io/badge/Debian-11%20to%2013-A81D33.svg)](https://www.debian.org/)
-[![Bash](https://img.shields.io/badge/Bash-4.4%2B-4EAA25.svg)](https://www.gnu.org/software/bash/)
+[![Debian](https://img.shields.io/badge/Debian-11--13-red.svg)](https://www.debian.org/)
+[![Bash](https://img.shields.io/badge/Language-Bash-green.svg)](https://www.gnu.org/software/bash/)
+[![Version](https://img.shields.io/badge/Version-3.3-brightgreen.svg)](https://github.com/everett7623/debian-auto-upgrade/releases)
 
-> 发行版升级始终有中断服务、软件源不兼容和无法启动的风险。生产环境请先创建整机快照，并准备云厂商控制台、VNC 或串口控制台。
+专为 Debian 系统打造的自动化升级脚本，支持从旧版本安全逐级升级到最新稳定版本。针对 VPS 环境深度优化，具备完善的错误恢复与容错能力。
 
-## 功能特性
+> ⚠️ 发行版升级始终存在服务中断、软件源不兼容和无法启动的风险。生产环境请先创建整机快照，并准备云厂商控制台、VNC 或串口控制台。
 
-- 只执行相邻 Debian 大版本升级，避免跨版本升级。
-- 默认只升级到稳定版；测试版必须显式使用 `--allow-testing`。
-- 升级前备份网络配置、APT 配置和接口信息。
-- 同时识别传统 `.list` 与 Deb822 `.sources` 软件源。
-- 暂时禁用附加源，避免第三方仓库阻断发行版升级。
-- 等待 APT/dpkg 锁正常释放，不直接删除正在使用的锁文件。
-- 升级后刷新 initramfs 和 GRUB 配置，但不会自动写入 MBR。
-- 支持 Debian 官方源、阿里云、清华大学和中科大镜像。
-- 提供检查、修复、调试和显式 GRUB 修复模式。
+## ✨ 功能特性
 
-## 支持范围
+- 🔄 **逐级安全升级** — 主脚本支持 Debian 11 → 12 → 13 相邻版本升级，避免跨版本风险
+- 🛡️ **智能版本管控** — 默认阻止意外升级到不稳定版本，`--stable-only` 模式保障生产安全
+- 🌍 **国内镜像支持** — 一键切换阿里云 / 清华 / 中科大镜像源，国内 VPS 推荐使用
+- 🔧 **APT 源安全处理** — 同时识别 `.list` 与 Deb822 `.sources`，升级前备份并暂时禁用附加源
+- 🔒 **APT 锁安全等待** — 等待 APT/dpkg 锁正常释放，不直接删除仍被进程占用的锁文件
+- 💾 **配置完整备份** — 升级前自动备份网络配置、APT 源等关键文件
+- 🖥️ **GRUB 保守处理** — 自动识别 UEFI/BIOS，常规升级仅刷新配置，不自动写入 MBR
+- 📊 **彩色日志输出** — 带时间戳的分级日志，`--debug` 模式输出完整诊断信息
+- 🔍 **升级前后验证** — 自动校验升级结果，失败时触发错误恢复流程
+- ⚠️ **风险分级确认** — 稳定版单次确认，测试版强制输入 `YES` 二次确认
 
-| 当前版本 | 目标版本 | 主脚本状态 |
-|---|---|---|
-| Debian 11 Bullseye | Debian 12 Bookworm | 支持 |
-| Debian 12 Bookworm | Debian 13 Trixie | 支持 |
-| Debian 13 Trixie | Debian 14 Forky | 实验性，需 `--allow-testing` |
-| Debian 8-10 | 下一相邻版本 | 仅保留历史脚本，不建议直接使用 |
+## 🎯 支持的升级路径
 
-Debian 8-10 已进入归档阶段，镜像地址、签名和中间升级要求与当前稳定版差异较大。`scripts/` 中的旧脚本仅供排查和迁移设计参考，详见 [scripts/README.md](scripts/README.md)。
+| 源版本 | 目标版本 | 状态 | 安全性 | 说明 |
+|---|---|---|---|---|
+| Debian 8 (Jessie) | Debian 9 (Stretch) | 📚 历史脚本 | ⚠️ 谨慎 | 仅供迁移研究，不属于主脚本支持范围 |
+| Debian 9 (Stretch) | Debian 10 (Buster) | 📚 历史脚本 | ⚠️ 谨慎 | 仅供迁移研究，不属于主脚本支持范围 |
+| Debian 10 (Buster) | Debian 11 (Bullseye) | 📚 历史脚本 | ⚠️ 谨慎 | 仅供迁移研究，不属于主脚本支持范围 |
+| Debian 11 (Bullseye) | Debian 12 (Bookworm) | ✅ 支持 | 🔒 稳定 | 主脚本支持 |
+| Debian 12 (Bookworm) | Debian 13 (Trixie) | ✅ 支持 | 🔒 稳定 | **当前推荐**，直接升级无需额外参数 |
+| Debian 13 (Trixie) | Debian 14 (Forky) | ⚠️ 实验性 | 🧪 谨慎 | 需 `--allow-testing`，不建议生产环境 |
 
-## 快速开始
+> **建议：** 生产系统请升级到 Debian 13 (Trixie)，这是当前稳定版。Debian 8-10 已进入归档范围，镜像、签名和中间升级要求复杂，请先阅读 [历史脚本说明](scripts/README.md) 及 Debian 官方 Release Notes。
+
+## 🚀 快速开始
+
+### 一键安装运行
 
 ```bash
-git clone https://github.com/everett7623/debian-auto-upgrade.git
-cd debian-auto-upgrade
-chmod +x debian_upgrade.sh
-
-# 只检查，不修改系统
-./debian_upgrade.sh --check
-
-# 升级到下一个稳定版
-sudo ./debian_upgrade.sh
+wget -O debian_upgrade.sh https://raw.githubusercontent.com/everett7623/debian-auto-upgrade/main/debian_upgrade.sh \
+  && chmod +x debian_upgrade.sh \
+  && sudo ./debian_upgrade.sh
 ```
 
-也可以下载单文件运行：
+也可以使用带 HTTPS 限制的 `curl` 下载：
 
 ```bash
 curl -fL --proto '=https' --tlsv1.2 \
@@ -56,83 +59,204 @@ chmod +x debian_upgrade.sh
 sudo ./debian_upgrade.sh --check
 ```
 
-下载后建议先核对 GitHub 中的文件内容或发布校验值，不要直接执行来源不明的脚本。
+> 下载后建议先核对 GitHub 中的文件内容或发布校验值，不要直接执行来源不明的脚本。
 
-## 命令参数
-
-| 参数 | 说明 |
-|---|---|
-| `-h, --help` | 显示帮助 |
-| `-v, --version` | 显示当前 Debian 版本 |
-| `-c, --check` | 检查版本、磁盘、内存、网络和引导状态 |
-| `-d, --debug` | 输出详细诊断信息 |
-| `--fix-only` | 修复 dpkg、依赖和 GRUB 配置，不升级 |
-| `--fix-grub` | 显式执行 GRUB 修复 |
-| `--force` | 跳过交互确认，仅用于受控自动化 |
-| `--stable-only` | 只升级到稳定版，默认行为 |
-| `--allow-testing` | 允许升级到下一测试版 |
-| `--mirror <cn\|tuna\|ustc>` | 选择中国大陆镜像 |
-
-## 常用示例
+### 基本用法
 
 ```bash
-# 生产环境：先检查，再升级
+# 检查当前版本与可用升级
 sudo ./debian_upgrade.sh --check
-sudo ./debian_upgrade.sh --stable-only
 
-# 中国大陆 VPS 使用阿里云镜像
+# 升级到最新稳定版（推荐）
+sudo ./debian_upgrade.sh
+
+# 使用国内镜像源升级（国内 VPS 推荐）
 sudo ./debian_upgrade.sh --mirror cn
 
-# 输出诊断信息
-sudo ./debian_upgrade.sh --debug --check
+# 查看当前版本
+sudo ./debian_upgrade.sh --version
 
-# 修复中断的 dpkg/APT 状态
+# 查看帮助
+sudo ./debian_upgrade.sh --help
+```
+
+## 📖 命令参数
+
+| 参数 | 说明 |
+|------|------|
+| `-h, --help` | 显示帮助信息 |
+| `-v, --version` | 显示当前 Debian 版本 |
+| `-c, --check` | 检查可用升级及系统状态 |
+| `-d, --debug` | 启用调试模式，输出详细诊断信息 |
+| `--fix-only` | 修复 dpkg、依赖和 GRUB 配置，不执行升级 |
+| `--fix-grub` | 显式执行 GRUB 引导修复 |
+| `--force` | 跳过所有确认提示（慎用） |
+| `--stable-only` | 仅升级到稳定版（默认，推荐） |
+| `--allow-testing` | 允许升级到 Debian 14 Forky（testing） |
+| `--mirror <cn\|tuna\|ustc>` | 使用指定国内镜像源 |
+
+## 💡 使用示例
+
+### 生产服务器（推荐）
+
+```bash
+# 检查状态，不执行升级
+sudo ./debian_upgrade.sh --check
+
+# 升级到 Debian 13 Trixie（当前稳定版）
+sudo ./debian_upgrade.sh --stable-only
+
+# 国内服务器使用阿里云源
+sudo ./debian_upgrade.sh --mirror cn
+```
+
+### 开发 / 测试环境
+
+```bash
+# 允许升级到 Forky 测试版（需手动输入 YES 确认）
+sudo ./debian_upgrade.sh --allow-testing
+
+# 自动化场景强制升级（极度谨慎）
+sudo ./debian_upgrade.sh --force --stable-only
+
+# 调试模式排查问题
+sudo ./debian_upgrade.sh --debug --check
+```
+
+### 系统修复
+
+```bash
+# 等待 APT 锁释放，修复 dpkg、依赖和 GRUB 配置
 sudo ./debian_upgrade.sh --fix-only
 
-# 明确需要时修复 GRUB
+# 专门修复 GRUB 引导（确认目标磁盘后使用）
 sudo ./debian_upgrade.sh --fix-grub
 ```
 
-## 镜像源
+## 🌍 国内镜像源
 
-| 参数值 | 镜像 |
-|---|---|
-| 默认 | `deb.debian.org` |
-| `cn` | `mirrors.aliyun.com` |
-| `tuna` | `mirrors.tuna.tsinghua.edu.cn` |
-| `ustc` | `mirrors.ustc.edu.cn` |
+通过 `--mirror` 参数一键切换，显著提升国内 VPS 下载速度：
 
-镜像只影响 Debian 官方仓库。第三方仓库会在升级前禁用，升级完成并确认兼容目标版本后再逐项恢复。
+| 参数值 | 镜像源 | 适用场景 |
+|--------|--------|----------|
+| `cn` | 阿里云 mirrors.aliyun.com | 国内通用 |
+| `tuna` | 清华大学 mirrors.tuna.tsinghua.edu.cn | 教育网用户 |
+| `ustc` | 中科大 mirrors.ustc.edu.cn | 教育网备选 |
+| _(不填)_ | Debian 官方 deb.debian.org | 境外服务器 |
 
-## 升级流程
+镜像选项只影响 Debian 官方仓库。第三方仓库会在升级前暂时禁用，升级完成并确认供应商支持目标 Debian 版本后再逐项恢复。
 
-1. 检查 Debian 版本、可用空间、内存、网络和启动模式。
-2. 保存网络接口及配置快照。
-3. 停止当前活跃的自动更新单元，并等待 APT/dpkg 锁释放。
-4. 修复未完成的 dpkg 配置和损坏依赖。
-5. 备份并禁用 `sources.list.d` 中的 `.list` 与 `.sources`。
-6. 写入目标版本官方源，执行 `apt-get update`。
-7. 依次执行最小升级和完整升级。
-8. 重建 initramfs、刷新 GRUB 配置并验证版本。
-9. 恢复脚本主动停止的自动更新单元。
+## 🔧 APT 源自动清理（安全处理）
 
-脚本不会自动恢复第三方源、不会自动改网卡名、不会自动重启网络服务，也不会在常规升级流程中写入磁盘引导区。
+升级前脚本会自动处理以下问题，降低常见的 **404 / Release 文件缺失** 风险：
 
-## 升级前检查清单
+- 自动备份 `/etc/apt/sources.list.d/`
+- 同时识别并禁用传统 `.list` 与 Deb822 `.sources` 附加源
+- 注释掉主 `sources.list` 中启用的 backports 行
+- `apt-get update` 检测到 404 时再次禁用残留附加源并重试
+- 写入新版 `sources.list` 时适配 Debian 11 的安全源格式和 Debian 12+ 的 `non-free-firmware`
+- 升级后不自动恢复第三方源，避免旧仓库再次污染软件包状态
 
-- 创建可回滚的 VPS 或虚拟机快照。
-- 单独备份数据库、上传文件、密钥和业务配置。
-- 确认控制台、VNC 或串口访问可用。
-- 确认根分区至少有 4 GB 可用空间，`/boot` 至少有 200 MB。
-- 完成当前版本全部更新并重启到最新内核。
-- 检查 `apt-mark showhold`、`dpkg --audit` 和第三方仓库。
-- 阅读目标版本的 Debian Release Notes。
+附加源备份目录形如：
 
-## 常见问题
+```text
+/etc/apt/sources.list.d.bak_<时间戳>
+```
 
-### APT update 返回 404 或缺少 Release 文件
+## 📦 升级策略
 
-检查目标版本、镜像和残留软件源：
+### 四阶段升级流程
+
+1. **升级前检查** — 检查版本、磁盘、内存、网络、启动模式及 APT/dpkg 状态
+2. **最小升级** (`apt-get upgrade`) — 先处理不涉及复杂依赖变更的软件包
+3. **完整升级** (`apt-get dist-upgrade`) — 执行完整发行版升级
+4. **升级后处理** — 重建 initramfs、刷新 GRUB 配置并验证目标版本
+
+### 安全边界
+
+- 不直接删除 APT/dpkg 锁文件
+- 不自动修改网卡名称
+- 不自动重启网络服务
+- 常规升级不写入 MBR 或无条件重装引导器
+- 升级后不自动执行 `autoremove`
+- 只恢复脚本本次主动停止的自动更新单元
+
+完整约束见 [docs/SAFETY.md](docs/SAFETY.md)。
+
+### 自动备份内容
+
+- APT 源配置（`sources.list` + `sources.list.d/`）
+- 网络接口配置（`/etc/network/interfaces`、systemd-networkd）
+- 升级前 IP 地址与路由表快照
+- 升级前网络接口名称
+
+## 💻 系统要求
+
+### 最低要求
+
+- 主脚本：Debian 11、12 或 13
+- Bash 4.4 或更高版本
+- 根分区可用空间 ≥ 2GB
+- 可用内存 ≥ 256MB
+- 稳定的互联网连接
+- root 权限或可用的 `sudo`
+
+### 生产环境建议
+
+- 根分区可用空间 ≥ 4GB
+- `/boot` 分区可用空间 ≥ 200MB
+- 可用内存 ≥ 1GB
+- 已完成当前版本全部更新并重启到最新内核
+- 具备 sudo 权限的用户账户
+- 具备可回滚快照及带外控制台访问
+
+## ⚠️ 重要安全提示
+
+### 升级前必做
+
+- 📸 创建 VPS / 虚拟机整机快照
+- 💾 单独备份数据库、上传文件、密钥和业务配置
+- 📝 记录当前网络配置（IP、网关、DNS）
+- 🔑 确保 VNC / 控制台 / 串口访问可用（SSH 升级期间可能中断）
+- 📦 检查 `apt-mark showhold`、`dpkg --audit` 和第三方仓库
+- 📖 阅读目标版本的 Debian Release Notes
+
+### Debian 11 用户须知
+
+- Debian 11 已是 oldoldstable，建议先升级到 Debian 12
+- 每次只升级一个大版本，不要直接跨越到 Debian 13
+- 完成 11 → 12 后应重启并验证服务，再继续后续升级
+
+### Debian 12 用户须知
+
+- ✅ Debian 13 (Trixie) 已于 2025-08-09 正式发布，**推荐规划升级**
+- 🚀 直接运行脚本即可升级，无需 `--allow-testing`
+- 🛡️ Debian 12 仍可继续使用，但应提前规划版本迁移
+- 🔌 升级前确认关键第三方软件已支持 Debian 13
+
+### Debian 13 用户须知
+
+- ✅ 已是当前稳定版，**建议保持**
+- ⚠️ 升级到 Debian 14 (Forky) 即进入 testing 分支，存在不稳定风险
+- 🛡️ 使用 `--stable-only`（默认）可防止误升级到测试版
+- 💡 测试版升级需手动输入 `YES` 进行二次确认
+
+## 🔒 确认机制
+
+| 升级类型 | 确认方式 |
+|----------|----------|
+| 稳定版 → 稳定版 | `[y/N]` 单次确认 |
+| 稳定版 → 测试版 | 需手动输入 `YES`（大写）并阅读风险说明 |
+| `--stable-only` 模式 | 不提供测试版升级选项 |
+| `--force` 模式 | 跳过交互确认（极度谨慎） |
+
+`--force` 只跳过交互确认，不代表操作无风险，也不能替代快照、备份和控制台访问。
+
+## 🐛 常见问题
+
+### ❓ apt-get update 报 404 或缺少 Release 文件
+
+常见原因是旧版 backports 或第三方源在升级后失效。脚本会备份并禁用附加源；若问题仍存在，可先检查当前配置：
 
 ```bash
 grep -RhsE '^(deb|Types:|URIs:|Suites:)' \
@@ -140,20 +264,39 @@ grep -RhsE '^(deb|Types:|URIs:|Suites:)' \
 sudo apt-get update
 ```
 
-脚本创建的附加源备份目录形如 `/etc/apt/sources.list.d.bak_<时间戳>`。
+不要一次性恢复全部旧源，应从备份目录逐项确认目标版本兼容性。
 
-### APT/dpkg 被锁定
+### ❓ APT 锁定错误
 
-不要手动删除锁文件。先确认占用进程：
+不要直接删除锁文件。先确认占用进程：
 
 ```bash
 sudo fuser -v /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock
 systemctl status apt-daily.service apt-daily-upgrade.service
 ```
 
-随后等待任务完成，或确认任务异常后再由管理员处理。
+确认其他包管理任务结束后，可运行：
 
-### 包依赖或 dpkg 配置中断
+```bash
+sudo ./debian_upgrade.sh --fix-only
+```
+
+### ❓ 重启后系统无法引导
+
+先通过救援环境确认根分区、EFI 分区和实际引导磁盘，不要直接套用示例磁盘名。
+
+```bash
+# 系统仍可启动时：
+sudo ./debian_upgrade.sh --fix-grub
+
+# 救援环境中按实际磁盘和挂载情况处理：
+grub-install /dev/sdX
+update-grub
+```
+
+### ❓ 包依赖冲突
+
+脚本会自动尝试修复依赖。若问题持续：
 
 ```bash
 sudo dpkg --configure -a
@@ -161,35 +304,98 @@ sudo apt-get --fix-broken install
 sudo ./debian_upgrade.sh --fix-only
 ```
 
-### 重启后无法引导
+### ❓ 升级后网络断开
 
-先通过救援环境确认根分区、EFI 分区和实际引导磁盘，再运行 `grub-install`。不要把示例磁盘名直接用于生产机器。系统仍可启动时可先执行：
-
-```bash
-sudo ./debian_upgrade.sh --fix-grub
-```
-
-### 升级后第三方软件不可用
-
-从备份目录逐个恢复仓库，并先确认供应商已支持目标 Debian 版本。不要一次性恢复全部旧源。
-
-## 开发与贡献
+脚本不会自动改网卡名或重启网络服务。请通过 VPS 控制台登录后检查：
 
 ```bash
-make check
+ip addr show
+ip route show
+systemctl status networking systemd-networkd NetworkManager
 ```
 
-开发环境、测试方法和提交要求见：
+网络配置备份路径会显示在升级日志中，请核对后人工恢复。
+
+### ❓ 升级后第三方软件不可用
+
+从 `/etc/apt/sources.list.d.bak_<时间戳>` 逐个恢复仓库，并先确认供应商已支持目标 Debian 版本。不要一次恢复全部旧源。
+
+## 📄 问题反馈
+
+提交 Issue 时请附上以下信息：
+
+- 当前系统版本：`cat /etc/os-release`
+- 错误日志：使用 `--debug` 参数重新运行并复制输出
+- 系统环境：物理机 / KVM / OpenVZ / 云厂商
+- 启动方式：UEFI / BIOS
+- 网络环境：是否使用代理 / 防火墙 / 国内镜像
+- 已隐藏密码、令牌、私有地址等敏感信息的 APT 配置
+
+安全问题请先阅读 [SECURITY.md](SECURITY.md)，不要在公开 Issue 中提交密钥、凭据或业务数据。
+
+## 🤝 参与贡献
+
+欢迎提交 Issue 和 Pull Request！
+
+### 开发流程
+
+1. Fork 本仓库
+2. 创建功能分支：`git checkout -b feature/amazing-feature`
+3. 安装开发依赖：`sudo apt-get install bash shellcheck make git`
+4. 运行检查：`make check`
+5. 提交变更：`git commit -m 'Add amazing feature'`
+6. 推送分支：`git push origin feature/amazing-feature`
+7. 发起 Pull Request
+
+### 贡献规范
+
+- 遵循 Bash 脚本最佳实践
+- 关键步骤须有明确错误处理
+- 默认流程不得删除包管理器锁、写入 MBR 或重启网络
+- 日志信息应清晰，不得输出凭据
+- 修改行为时同步更新 README、CHANGELOG 和测试
+- 在 Pull Request 中说明测试过的 Debian 版本和启动方式
+
+详细开发说明：
 
 - [CONTRIBUTING.md](CONTRIBUTING.md)
 - [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)
 - [docs/SAFETY.md](docs/SAFETY.md)
-- [SECURITY.md](SECURITY.md)
+- [scripts/README.md](scripts/README.md)
 
-## 许可证
+## 📝 许可证
 
-本项目使用 [MIT License](LICENSE)。
+本项目基于 [MIT 许可证](LICENSE) 开源。
 
-## 版本历史
+## 🙏 致谢
 
-详细变更见 [CHANGELOG.md](CHANGELOG.md)。
+- Debian 项目及所有维护者
+- 阿里云、清华大学、中科大镜像站
+- 社区用户的反馈与建议
+
+## 📞 支持
+
+- 📧 邮件：[everett7623@gmail.com](mailto:everett7623@gmail.com)
+- 🐛 问题反馈：[GitHub Issues](https://github.com/everett7623/debian-auto-upgrade/issues)
+- 💬 讨论区：[GitHub Discussions](https://github.com/everett7623/debian-auto-upgrade/discussions)
+
+---
+
+⭐ **如果这个项目对你有帮助，欢迎点个 Star！** ⭐
+
+🛡️ **提示：** Debian 13 (Trixie) 是当前稳定版；生产环境升级前请先创建快照并确认控制台可用。
+
+## 📚 版本历史
+
+| 版本 | 日期 | 主要变更 |
+|------|------|----------|
+| **v3.3** | 2026-06-09 | 安全加固：等待 APT 锁正常释放；支持 `.sources`；取消默认改网卡、重启网络、写 MBR 和 `autoremove`；补充测试、CI 与开发文档 |
+| **v3.2** | 2026-06-01 | 更新 Debian 13 Trixie 为正式稳定版：12→13 直接升级无需 `--allow-testing`，13→14 (Forky) 需 `--allow-testing`，同步更新 README |
+| **v3.1** | 2026-06-01 | 修复 Debian 12 已是最新稳定版时升级提示不显示的 bug |
+| **v3.0** | 2026-04-02 | 全面重构：统一错误处理、自动清理旧 APT 源（修复 404）、GRUB 检测逻辑优化、磁盘空间预检、新增 `--mirror` 国内源支持 |
+| **v2.6** | 2024-12-01 | 修复 GRUB 过度修复问题，改进重启确认机制 |
+| **v2.5** | 2024-11-01 | 新增网络配置备份恢复，旧内核自动清理 |
+| **v2.0** | 2024-06-01 | 新增 UEFI/BIOS 自动检测，NVMe 磁盘支持 |
+| **v1.0** | 2024-01-01 | 初始版本，基础升级功能 |
+
+详细变更记录见 [CHANGELOG.md](CHANGELOG.md)。

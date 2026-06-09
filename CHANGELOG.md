@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+### Documentation
+- Restored the original README structure, examples, support information, acknowledgements, and version history while retaining the v3.3 safety corrections.
+
 ## [3.3.0] - 2026-06-09
 
 ### Changed
