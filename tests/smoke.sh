@@ -26,6 +26,9 @@ trap - EXIT
 [[ -z "$(STABLE_ONLY=1 get_next_version 13)" ]] || fail "stable policy"
 [[ "$(STABLE_ONLY=0 get_next_version 13)" == "14" ]] || fail "testing policy"
 [[ "$(get_version_info 13)" == "trixie|stable" ]] || fail "Trixie status"
+[[ "$(get_version_info 14)" == "forky|testing" ]] || fail "Forky status"
+[[ -z "$(STABLE_ONLY=1 get_next_version 14)" ]] || fail "Forky stable policy"
+[[ -z "$(get_next_version 14)" ]] || fail "Forky no further upgrade"
 
 dist_upgrade_count="$(grep -c 'apt-get dist-upgrade' "$SCRIPT")"
 [[ "$dist_upgrade_count" == "1" ]] || fail "dist-upgrade should run at most once"

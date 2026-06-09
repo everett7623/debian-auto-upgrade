@@ -31,6 +31,13 @@
 #                     - get_next_version: Debian 13 → 14 需要 --allow-testing（forky 为 unstable）
 #                     - 最新点版本 13.5（2026-05-16），支持周期至 2030 年
 #                     - 更新 --help 升级路径说明
+#   v3.3  2026-06-09  安全加固：等待 APT 锁正常释放；支持 .sources；取消默认改网卡、重启网络、写 MBR 和 autoremove；补充测试、CI 与开发文档
+#   v3.3.1 2026-06-09 新增 --preflight 深度检查（initramfs 预检、LD_PRELOAD 注入检测、失败诊断），优化升级后 initramfs 去重
+#   v3.4  2026-06-10  代码审查与优化
+#                     - 修复 dpkg --audit / --configure -a 可能触发 ERR 陷阱导致脚本中断的问题
+#                     - 修复 fix_grub_mode() 中 lsblk 磁盘列表 awk 引用空字段的显示缺陷
+#                     - 修复 get_current_version 策略4 缺少 forky 代号检测
+#                     - 注释全面中文化，统一术语和表述
 # =============================================================================
 # 使用方法:
 #   chmod +x debian_upgrade.sh
@@ -51,9 +58,9 @@
 set -Ee -o pipefail
 
 # ── 脚本元信息 ────────────────────────────────────────────────────────────────
-SCRIPT_VERSION="3.3.1"
+SCRIPT_VERSION="3.4"
 SCRIPT_NAME="debian_upgrade.sh"
-SCRIPT_DATE="2026-06-09"
+SCRIPT_DATE="2026-06-10"
 RUN_ID="$(date +%Y%m%d_%H%M%S)_$$"
 RUN_DIR="${TMPDIR:-/tmp}/debian-auto-upgrade-${RUN_ID}"
 APT_UPDATE_LOG="${RUN_DIR}/apt-update.log"
@@ -249,6 +256,7 @@ get_current_version() {
         elif echo "$ap" | grep -q "stretch";  then version_id="9"
         elif echo "$ap" | grep -q "jessie";   then version_id="8"
         elif echo "$ap" | grep -q "trixie";   then version_id="13"
+        elif echo "$ap" | grep -q "forky";    then version_id="14"
         fi
         log_debug "apt-cache policy: '$version_id'"
     fi
@@ -545,9 +553,9 @@ pre_upgrade_preparation() {
     check_initramfs_health
 
     # 修复 dpkg / 损坏依赖
-    $USE_SUDO dpkg --audit
-    $USE_SUDO dpkg --configure -a
-    DEBIAN_FRONTEND=noninteractive $USE_SUDO apt-get --fix-broken install -y
+    $USE_SUDO dpkg --audit 2>/dev/null || true
+    $USE_SUDO dpkg --configure -a 2>/dev/null || true
+    DEBIAN_FRONTEND=noninteractive $USE_SUDO apt-get --fix-broken install -y 2>/dev/null || true
 
     # 关键步骤：清理旧/无效 sources，避免 404
     clean_apt_sources "$target_codename"
@@ -993,7 +1001,7 @@ fix_grub_mode() {
         while read -r line; do
             disks+=("$line")
             echo "  $((${#disks[@]})). /dev/$line"
-        done < <(lsblk -d -n -o NAME,TYPE | awk '$2=="disk"{print $1" - "$(3)}')
+        done < <(lsblk -d -n -o NAME,TYPE,SIZE | awk '$2=="disk"{print $1" - "$3}')
 
         read -p "输入编号或回车跳过: " -r </dev/tty
         if [[ "$REPLY" =~ ^[0-9]+$ ]] && (( REPLY >= 1 && REPLY <= ${#disks[@]} )); then
