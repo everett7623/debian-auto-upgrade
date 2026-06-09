@@ -41,6 +41,9 @@
 #   v3.4.1 2026-06-10  紧急修复：跨版本升级 GPG 签名验证失败
 #                     - 切换软件源之前更新 debian-archive-keyring，确保包含目标版本的 GPG 密钥
 #                     - apt-get update 遇到 NO_PUBKEY 错误时，临时使用 [trusted=yes] 安装密钥环后恢复验证
+#   v3.4.2 2026-06-10  修复：云镜像 / 容器环境下 initramfs 预检因缺少 /var/tmp 失败
+#                     - mkinitramfs 内部 mktemp 依赖 /var/tmp，部分云镜像未预置该目录
+#                     - check_initramfs_health() 调用前确保 /var/tmp 存在
 # =============================================================================
 # 使用方法:
 #   chmod +x debian_upgrade.sh
@@ -61,7 +64,7 @@
 set -Ee -o pipefail
 
 # ── 脚本元信息 ────────────────────────────────────────────────────────────────
-SCRIPT_VERSION="3.4.1"
+SCRIPT_VERSION="3.4.2"
 SCRIPT_NAME="debian_upgrade.sh"
 SCRIPT_DATE="2026-06-10"
 RUN_ID="$(date +%Y%m%d_%H%M%S)_$$"
@@ -498,6 +501,8 @@ check_initramfs_health() {
     }
 
     mkdir -p "$RUN_DIR"
+    # mkinitramfs 内部 mktemp 依赖 /var/tmp，部分云镜像未预置该目录
+    $USE_SUDO mkdir -p /var/tmp 2>/dev/null || true
     log_info "预检 initramfs 生成能力（内核: $kernel）..."
     if ! $USE_SUDO mkinitramfs -o "$RUN_DIR/initramfs-preflight.img" "$kernel" \
         >"$RUN_DIR/initramfs-preflight.log" 2>&1; then
