@@ -47,6 +47,18 @@
 #   v3.5  2026-06-10  新增：升级后系统清理模式 --cleanup
 #                     - 五步清理：废弃包/孤立依赖 → rc 残留配置 → 旧内核 → APT 缓存 → 旧 dpkg 配置
 #                     - 清理前后显示磁盘用量对比，操作安全可重复执行
+#   v3.6  2026-06-10  VPS 兼容性全面加固
+#                     - ARM64 (aarch64) 架构支持：fix_grub_mode 自动检测 uname -m
+#                     - 容器环境检测 (OpenVZ/LXC/Docker)：自动跳过 GRUB 和 /boot 相关操作
+#                     - 非交互终端安全降级：缺失 /dev/tty 时不再崩溃（cron/systemd 环境）
+#                     - EFI 目录多策略检测：findmnt → 常见路径 → /etc/fstab
+#                     - 网络检测 HTTP 回退：ICMP 被阻断时尝试 wget/curl 检查镜像源
+#                     - self-update CDN 回退：GitHub 不可达时自动尝试 jsDelivr CDN
+#                     - GPG→404 错误分支顺序修复：两种错误同时出现时恢复路径可达
+#                     - 日志文件拆分：apt-upgrade / dist-upgrade / initramfs 独立保存
+#                     - 关联数组重构版本元数据：新增 Debian 版本只需追加三条记录
+#                     - fix_only_mode 添加 stop_apt_units 防止定时任务抢占锁
+#                     - mirror 无效值主动警告、wget 缺失提示、blkid sudo 前缀等细节修复
 # =============================================================================
 # 使用方法:
 #   chmod +x debian_upgrade.sh
@@ -67,14 +79,18 @@
 set -Ee -o pipefail
 
 # ── 脚本元信息 ────────────────────────────────────────────────────────────────
-SCRIPT_VERSION="3.5"
+SCRIPT_VERSION="3.6"
 SCRIPT_NAME="debian_upgrade.sh"
 SCRIPT_DATE="2026-06-10"
 SCRIPT_REPO="https://raw.githubusercontent.com/everett7623/debian-auto-upgrade/main/debian_upgrade.sh"
+# GitHub 在国内可能被阻断，提供 CDN 回退地址
+SCRIPT_REPO_CDN="https://cdn.jsdelivr.net/gh/everett7623/debian-auto-upgrade@main/debian_upgrade.sh"
 RUN_ID="$(date +%Y%m%d_%H%M%S)_$$"
 RUN_DIR="${TMPDIR:-/tmp}/debian-auto-upgrade-${RUN_ID}"
 APT_UPDATE_LOG="${RUN_DIR}/apt-update.log"
 APT_UPGRADE_LOG="${RUN_DIR}/apt-upgrade.log"
+APT_DIST_UPGRADE_LOG="${RUN_DIR}/apt-dist-upgrade.log"
+INITRAMFS_POST_LOG="${RUN_DIR}/initramfs-post.log"
 KEEP_RUN_DIR=0
 STOPPED_APT_UNITS=()
 
@@ -103,14 +119,33 @@ USE_SUDO=""
 MIRROR_BASE="http://deb.debian.org/debian"
 MIRROR_SECURITY="http://deb.debian.org/debian-security"
 
+# ── 安全交互输入（缺失 /dev/tty 时优雅降级，如 cron / systemd 自动化环境）──
+# 用法: safe_read "提示文本" [默认值]
+safe_read() {
+    local prompt="$1"
+    local default="${2:-}"
+    # 优先使用 /dev/tty（SSH 会话），不存在则回退到 stdin/stdout
+    if [[ -e /dev/tty ]]; then
+        [[ ! -t 0 ]] && exec 0</dev/tty
+        echo -n "$prompt" >/dev/tty
+        read -r REPLY </dev/tty
+    elif [[ -t 0 ]]; then
+        echo -n "$prompt"
+        read -r REPLY
+    else
+        # 完全无交互终端（cron / systemd），返回默认值
+        log_warning "无交互终端，使用默认值: ${default:-无}"
+        REPLY="$default"
+    fi
+}
+
 # ── 用户交互确认 ──────────────────────────────────────────────────────────────
 get_user_confirmation() {
     local prompt="$1"
     local response=""
-    [[ ! -t 0 ]] && exec 0</dev/tty
     while true; do
-        echo -n "$prompt"
-        read -r response </dev/tty
+        safe_read "$prompt"
+        response="$REPLY"
         case "$response" in
             [Yy][Ee][Ss]) return 0 ;;
             [Nn][Oo]|"")  return 1 ;;
@@ -147,7 +182,7 @@ detect_boot_disk() {
         root_dev=$(grep -o 'root=[^ ]*' /proc/cmdline | head -1 | sed 's/root=//')
         if [[ "$root_dev" =~ ^UUID= ]]; then
             local uuid="${root_dev#UUID=}"
-            disk=$(blkid -U "$uuid" 2>/dev/null | sed -E 's/p?[0-9]+$//')
+            disk=$($USE_SUDO blkid -U "$uuid" 2>/dev/null | sed -E 's/p?[0-9]+$//')
         else
             disk=$(echo "$root_dev" | sed -E 's/p?[0-9]+$//')
         fi
@@ -189,32 +224,44 @@ set_mirror() {
             log_info "使用中科大镜像源"
             ;;
         *)
-            log_debug "使用 Debian 官方源"
+            if [[ "${MIRROR:-default}" != "default" ]]; then
+                log_warning "未知镜像参数 '${MIRROR}'，回退到 Debian 官方源（支持: cn|tuna|ustc）"
+            else
+                log_debug "使用 Debian 官方源"
+            fi
             ;;
     esac
 }
 
-# ── 版本信息映射 ──────────────────────────────────────────────────────────────
+# ── 版本信息映射（关联数组，新增版本只需追加一条记录）─────────────────────
+# 未来 Debian 15 发布时，只需添加 [15] 条目到以下三个数组中即可
+declare -A DEBIAN_CODENAME=(
+    [8]="jessie"    [9]="stretch"   [10]="buster"
+    [11]="bullseye" [12]="bookworm" [13]="trixie"   [14]="forky"
+)
+declare -A DEBIAN_STATUS=(
+    [8]="archived"      [9]="archived"      [10]="archived"
+    [11]="oldoldstable" [12]="oldstable"    [13]="stable"       [14]="testing"
+)
+# 标准相邻升级路径（不含 STABLE_ONLY 门控逻辑）
+declare -A DEBIAN_NEXT=(
+    [8]="9"  [9]="10"  [10]="11"  [11]="12"  [12]="13"
+)
+
 get_version_info() {
-    case $1 in
-        "8")  echo "jessie|archived" ;;
-        "9")  echo "stretch|archived" ;;
-        "10") echo "buster|archived" ;;
-        "11") echo "bullseye|oldoldstable" ;;
-        "12") echo "bookworm|oldstable" ;;
-        "13") echo "trixie|stable" ;;
-        "14") echo "forky|testing" ;;
-        *)    echo "unknown|unknown" ;;
-    esac
+    local codename="${DEBIAN_CODENAME[$1]:-unknown}"
+    local status="${DEBIAN_STATUS[$1]:-unknown}"
+    echo "${codename}|${status}"
 }
 
 get_next_version() {
-    case $1 in
-        "11") echo "12" ;;
-        "12") echo "13" ;;
-        "13") [[ "${STABLE_ONLY:-1}" == "1" ]] && echo "" || echo "14" ;;
-        *)    echo "" ;;
-    esac
+    local nxt="${DEBIAN_NEXT[$1]:-}"
+    # Debian 13 → 14 受 STABLE_ONLY 门控（14 为 testing）
+    if [[ "$1" == "13" ]]; then
+        [[ "${STABLE_ONLY:-1}" == "1" ]] && echo "" || echo "14"
+        return
+    fi
+    echo "$nxt"
 }
 
 # ── 当前版本检测（多策略，容错）──────────────────────────────────────────────
@@ -312,7 +359,30 @@ fix_network_config() {
     done < "$backup_dir/network/interface_names.txt"
 }
 
-# ── 清理旧内核 ────────────────────────────────────────────────────────────────
+# ── 获取旧内核列表（共享函数，保留当前运行和最新安装的内核）──────────────────
+# 输出空格分隔的旧内核包名，无旧内核时输出空字符串
+get_old_kernels() {
+    local cur_k latest_k
+    cur_k=$(uname -r)
+    latest_k=$(ls -t /boot/vmlinuz-* 2>/dev/null | head -1 | sed 's|/boot/vmlinuz-||')
+
+    local result=""
+    while read -r pkg; do
+        local ver="${pkg#linux-image-}"
+        # 兼容 linux-image-linux-image-* 双重前缀的包名
+        ver="${ver#linux-image-}"
+        if [[ "$ver" != "$cur_k" && "$ver" != "$latest_k" \
+              && "$pkg" != "linux-image-amd64" \
+              && "$pkg" != "linux-image-arm64" ]]; then
+            result="$result $pkg"
+        fi
+    done < <(dpkg -l 'linux-image-*' 2>/dev/null | awk '/^ii/{print $2}')
+
+    # 去除前导空格
+    echo "${result# }"
+}
+
+# ── 清理旧内核（升级前 /boot 空间不足时调用）────────────────────────────────
 clean_old_kernels() {
     log_info "清理旧内核以释放 /boot 空间..."
     local cur_k latest_k
@@ -320,15 +390,8 @@ clean_old_kernels() {
     latest_k=$(ls -t /boot/vmlinuz-* 2>/dev/null | head -1 | sed 's|/boot/vmlinuz-||')
     log_info "当前内核: $cur_k | 最新内核: ${latest_k:-未知}"
 
-    local to_remove=""
-    while read -r pkg; do
-        local ver="${pkg#linux-image-}"
-        if [[ "$ver" != "$cur_k" && "$ver" != "$latest_k" \
-              && "$pkg" != "linux-image-amd64" \
-              && "$pkg" != "linux-image-arm64" ]]; then
-            to_remove="$to_remove $pkg"
-        fi
-    done < <(dpkg -l 'linux-image-*' 2>/dev/null | awk '/^ii/{print $2}')
+    local to_remove
+    to_remove=$(get_old_kernels)
 
     if [[ -n "$to_remove" ]]; then
         log_info "移除旧内核: $to_remove"
@@ -407,10 +470,20 @@ check_system() {
     (( avail_mem < 256 )) && log_warning "可用内存不足 256MB，升级可能较慢"
 
     # 网络连通性（仅警告，不阻断）
-    if ! ping -c 1 -W 5 deb.debian.org >/dev/null 2>&1; then
-        log_warning "无法连接 deb.debian.org，请确认网络或使用 --mirror 选项"
+    # ICMP 在某些 VPS 环境被阻断（特别是国内），优先用 HTTP 检测
+    local net_ok=0
+    if ping -c 1 -W 5 deb.debian.org >/dev/null 2>&1; then
+        net_ok=1
+    elif command -v wget >/dev/null 2>&1 && wget -q --timeout=10 --spider "${MIRROR_BASE}" 2>/dev/null; then
+        net_ok=1
+    elif command -v curl >/dev/null 2>&1 && curl -s --connect-timeout 10 --head "${MIRROR_BASE}" >/dev/null 2>&1; then
+        net_ok=1
     fi
+    (( net_ok )) || log_warning "无法连接 deb.debian.org（ICMP + HTTP 均失败），请确认网络或使用 --mirror 选项"
 
+    if is_container; then
+        log_info "检测到容器环境（OpenVZ / LXC / Docker），跳过 /boot 和 GRUB 相关检查"
+    fi
     log_debug "启动模式: $(detect_boot_mode) | 引导磁盘: $(detect_boot_disk || echo '未检测到')"
     log_success "系统环境检查完成"
 }
@@ -579,23 +652,33 @@ pre_upgrade_preparation() {
     clean_apt_sources "$target_codename"
 
     # 检查并预设 GRUB 磁盘，避免升级时弹出交互提示
-    local boot_mode boot_disk
-    boot_mode=$(detect_boot_mode)
-    boot_disk=$(detect_boot_disk)
-
-    if [[ -z "$boot_disk" ]]; then
-        log_warning "未自动检测到引导磁盘，升级后可能需手动修复 GRUB"
-        if [[ "${FORCE:-0}" != "1" ]]; then
-            read -p "是否继续升级？[y/N]: " -n 1 -r </dev/tty; echo
-            [[ ! $REPLY =~ ^[Yy]$ ]] && { log_info "已取消"; exit 1; }
-        fi
+    # 容器环境无需 GRUB，直接跳过
+    if is_container; then
+        log_info "检测到容器环境，跳过 GRUB 磁盘检测和预设"
     else
-        log_success "引导磁盘: $boot_disk（模式: $boot_mode）"
-        if [[ "$boot_mode" == "bios" ]]; then
-            printf "grub-pc grub-pc/install_devices multiselect %s\n" "$boot_disk" \
-                | $USE_SUDO debconf-set-selections
-            echo "grub-pc grub-pc/install_devices_empty boolean false" \
-                | $USE_SUDO debconf-set-selections
+        local boot_mode boot_disk
+        boot_mode=$(detect_boot_mode)
+        boot_disk=$(detect_boot_disk)
+
+        if [[ -z "$boot_disk" ]]; then
+            log_warning "未自动检测到引导磁盘，升级后可能需手动修复 GRUB"
+            if [[ "${FORCE:-0}" != "1" ]]; then
+                if [[ -e /dev/tty ]]; then
+                    read -p "是否继续升级？[y/N]: " -n 1 -r </dev/tty; echo
+                else
+                    log_warning "无交互终端，默认取消升级（使用 --force 跳过确认）"
+                    REPLY=""
+                fi
+                [[ ! $REPLY =~ ^[Yy]$ ]] && { log_info "已取消"; exit 1; }
+            fi
+        else
+            log_success "引导磁盘: $boot_disk（模式: $boot_mode）"
+            if [[ "$boot_mode" == "bios" ]]; then
+                printf "grub-pc grub-pc/install_devices multiselect %s\n" "$boot_disk" \
+                    | $USE_SUDO debconf-set-selections
+                echo "grub-pc grub-pc/install_devices_empty boolean false" \
+                    | $USE_SUDO debconf-set-selections
+            fi
         fi
     fi
 
@@ -618,15 +701,18 @@ post_upgrade_fixes() {
         else
             log_warning "最新内核缺少 initramfs，开始补建: $latest_kernel"
             if ! $USE_SUDO update-initramfs -c -k "$latest_kernel" 2>&1 \
-                | tee "$APT_UPGRADE_LOG"; then
-                diagnose_upgrade_failure "$APT_UPGRADE_LOG"
+                | tee "$INITRAMFS_POST_LOG"; then
+                diagnose_upgrade_failure "$INITRAMFS_POST_LOG"
                 return 1
             fi
         fi
     fi
 
     # 发行版升级不应无条件重装引导器或写入 MBR，仅刷新配置。
-    if command -v update-grub >/dev/null 2>&1; then
+    # 容器环境无需 GRUB 操作
+    if is_container; then
+        log_info "容器环境，跳过 GRUB 配置刷新"
+    elif command -v update-grub >/dev/null 2>&1; then
         log_info "刷新 GRUB 配置（不写入磁盘引导区）"
         $USE_SUDO update-grub || log_warning "GRUB 配置刷新失败，可稍后显式运行 --fix-grub"
     fi
@@ -645,7 +731,12 @@ safe_reboot() {
     echo "╔════════════════════════════════════════╗"
     echo "║           ⚠️  即将重启系统              ║"
     echo "╚════════════════════════════════════════╝"
-    read -p "最后确认：确定要重启吗？[y/N]: " -n 1 -r </dev/tty; echo
+    if [[ -e /dev/tty ]]; then
+        read -p "最后确认：确定要重启吗？[y/N]: " -n 1 -r </dev/tty; echo
+    else
+        log_warning "无交互终端，默认取消重启"
+        REPLY=""
+    fi
     [[ ! $REPLY =~ ^[Yy]$ ]] && { log_info "已取消重启，请稍后手动执行: sudo reboot"; return; }
 
     log_info "同步文件系统..."
@@ -770,9 +861,14 @@ check_upgrade() {
 
     echo "  内存:     $(free -h | awk 'NR==2{printf "已用 %s / 总计 %s", $3, $2}')"
 
-    ping -c 1 -W 5 deb.debian.org >/dev/null 2>&1 \
-        && echo "  网络:     ✅ 可连接 deb.debian.org" \
-        || echo "  网络:     ⚠️  无法连接 deb.debian.org"
+    if ping -c 1 -W 5 deb.debian.org >/dev/null 2>&1; then
+        echo "  网络:     ✅ 可连接 deb.debian.org"
+    elif { command -v wget >/dev/null 2>&1 && wget -q --timeout=10 --spider "${MIRROR_BASE}" 2>/dev/null; } \
+      || { command -v curl >/dev/null 2>&1 && curl -s --connect-timeout 10 --head "${MIRROR_BASE}" >/dev/null 2>&1; }; then
+        echo "  网络:     ⚡ ICMP 不可达但 HTTP 可达（可能被阻断 ICMP）"
+    else
+        echo "  网络:     ⚠️  无法连接 deb.debian.org（ICMP + HTTP 均失败）"
+    fi
 
     local load_avg
     load_avg=$(uptime | awk -F'load average:' '{print $2}' | awk '{print $1}' | tr -d ',')
@@ -794,15 +890,19 @@ check_upgrade() {
         adv_name=$(echo "$adv_info" | cut -d'|' -f1)
         adv_stat=$(echo "$adv_info" | cut -d'|' -f2)
         if [[ "$adv_stat" == "stable" ]]; then
-            echo "  ✅ 推荐升级到 Debian $nxt ($adv_name) - 稳定版"
+            echo "  ✅ 推荐升级到 Debian $nxt ($adv_name) - 当前稳定版"
             echo "  🔧 升级前建议先修复引导: $0 --fix-grub"
             echo "  🚀 执行升级:             $0"
+        elif [[ "$adv_stat" == "oldstable" || "$adv_stat" == "oldoldstable" ]]; then
+            echo "  ✅ 可升级到 Debian $nxt ($adv_name) - 旧稳定版（$adv_stat）"
+            echo "  💡 建议升级完成后继续运行脚本再升一级到当前稳定版"
+            echo "  🚀 执行升级: $0"
         elif [[ "$adv_stat" =~ testing ]]; then
             echo "  ⚠️  可升级到 Debian $nxt ($adv_name) - 测试版 (freeze 阶段)"
             echo "  🧪 测试环境升级: $0 --allow-testing"
             echo "  🛡️  保持稳定版本: $0 --stable-only  (推荐)"
         else
-            echo "  ❌ 不建议升级到 Debian $nxt - 不稳定版本"
+            echo "  ❌ 不建议升级到 Debian $nxt ($adv_name) - 当前状态为 $adv_stat"
         fi
     else
         echo "  ✅ 当前为最新稳定版 (Debian $cur)"
@@ -865,7 +965,12 @@ main_upgrade() {
         fi
     else
         if [[ "${FORCE:-0}" != "1" ]]; then
-            read -p "确认升级到 Debian $nxt ($nxt_name)？[y/N]: " -n 1 -r </dev/tty; echo
+            if [[ -e /dev/tty ]]; then
+                read -p "确认升级到 Debian $nxt ($nxt_name)？[y/N]: " -n 1 -r </dev/tty; echo
+            else
+                log_warning "无交互终端，默认取消（使用 --force 跳过确认）"
+                REPLY=""
+            fi
             [[ ! $REPLY =~ ^[Yy]$ ]] && { log_info "已取消"; exit 0; }
         fi
     fi
@@ -907,22 +1012,10 @@ EOF
     mkdir -p "$RUN_DIR"
     $USE_SUDO apt-get -o Acquire::Languages=none update 2>&1 | tee "$APT_UPDATE_LOG" || {
         log_warning "apt-get update 出现错误（见上），检查是否可继续..."
-        # 如果是 Release 文件不存在（404），属于已清理源的残留，可忽略
-        if grep -q "404\|Release.*does not have" "$APT_UPDATE_LOG"; then
-            log_warning "检测到 404 错误，尝试再次清理无效源后重试"
-            # 禁用所有 sources.list.d 中的第三方源
-            find /etc/apt/sources.list.d/ -maxdepth 1 -type f \
-                \( -name "*.list" -o -name "*.sources" \) 2>/dev/null \
-                | while read -r f; do
-                    log_warning "  禁用: $f"
-                    $USE_SUDO mv "$f" "${f}.disabled-by-debian-upgrade" 2>/dev/null || true
-                done
-            $USE_SUDO apt-get -o Acquire::Languages=none update || {
-                log_error "软件包列表更新失败，请检查网络或手动修复源配置"
-                exit 1
-            }
-        # 如果是 GPG 签名验证错误，临时跳过签名安装密钥环后恢复正常验证
-        elif grep -q "NO_PUBKEY\|GPG error\|is not signed" "$APT_UPDATE_LOG"; then
+
+        # GPG 签名验证错误优先处理 — 必须在 404 检查之前，否则同时存在两种错误时
+        # GPG 恢复路径不可达（404 分支先匹配且重试失败后直接 exit）
+        if grep -q "NO_PUBKEY\|GPG error\|is not signed" "$APT_UPDATE_LOG"; then
             log_warning "检测到 GPG 签名验证错误，尝试安装目标版本密钥环..."
             # 临时为所有源添加 [trusted=yes] 跳过签名验证
             $USE_SUDO sed -i 's/^deb /deb [trusted=yes] /' /etc/apt/sources.list
@@ -936,12 +1029,36 @@ EOF
                 debian-archive-keyring 2>/dev/null || true
             # 移除 [trusted=yes]，恢复正常的签名验证
             $USE_SUDO sed -i 's/^deb \[trusted=yes\] /deb /' /etc/apt/sources.list
-            # 再次更新以确认签名验证正常
+            # 再次更新（可能仍有 404，继续处理）
+            if $USE_SUDO apt-get -o Acquire::Languages=none update; then
+                log_success "密钥环已更新，签名验证恢复正常"
+            else
+                log_warning "签名验证已恢复，但更新仍有错误（见上），尝试清理 404..."
+                find /etc/apt/sources.list.d/ -maxdepth 1 -type f \
+                    \( -name "*.list" -o -name "*.sources" \) 2>/dev/null \
+                    | while read -r f; do
+                        log_warning "  禁用: $f"
+                        $USE_SUDO mv "$f" "${f}.disabled-by-debian-upgrade" 2>/dev/null || true
+                    done
+                $USE_SUDO apt-get -o Acquire::Languages=none update || {
+                    log_error "软件包列表更新失败，请检查网络或手动修复源配置"
+                    exit 1
+                }
+            fi
+        # 如果是 Release 文件不存在（404），属于已清理源的残留，可忽略
+        elif grep -q "404\|Release.*does not have" "$APT_UPDATE_LOG"; then
+            log_warning "检测到 404 错误，尝试再次清理无效源后重试"
+            # 禁用所有 sources.list.d 中的第三方源
+            find /etc/apt/sources.list.d/ -maxdepth 1 -type f \
+                \( -name "*.list" -o -name "*.sources" \) 2>/dev/null \
+                | while read -r f; do
+                    log_warning "  禁用: $f"
+                    $USE_SUDO mv "$f" "${f}.disabled-by-debian-upgrade" 2>/dev/null || true
+                done
             $USE_SUDO apt-get -o Acquire::Languages=none update || {
-                log_error "密钥环安装后软件包列表仍未通过验证，请检查网络或手动修复源配置"
+                log_error "软件包列表更新失败，请检查网络或手动修复源配置"
                 exit 1
             }
-            log_success "密钥环已更新，签名验证恢复正常"
         else
             log_error "软件包列表更新失败"
             exit 1
@@ -963,9 +1080,9 @@ EOF
     log_info "  3.2 完整升级 (dist-upgrade)..."
     if ! DEBIAN_FRONTEND=noninteractive $USE_SUDO apt-get dist-upgrade -y \
         -o Dpkg::Options::="--force-confdef" \
-        -o Dpkg::Options::="--force-confold" 2>&1 | tee "$APT_UPGRADE_LOG"; then
+        -o Dpkg::Options::="--force-confold" 2>&1 | tee "$APT_DIST_UPGRADE_LOG"; then
         log_error "完整升级失败，已停止自动重试，避免重复执行同一故障"
-        diagnose_upgrade_failure "$APT_UPGRADE_LOG"
+        diagnose_upgrade_failure "$APT_DIST_UPGRADE_LOG"
         exit 1
     fi
 
@@ -998,10 +1115,20 @@ EOF
 
         echo
         if [[ "${FORCE:-0}" != "1" ]]; then
-            read -p "是否需要 GRUB 修复？（通常无需）[y/N]: " -n 1 -r </dev/tty; echo
+            if [[ -e /dev/tty ]]; then
+                read -p "是否需要 GRUB 修复？（通常无需）[y/N]: " -n 1 -r </dev/tty; echo
+            else
+                log_info "无交互终端，跳过 GRUB 修复询问"
+                REPLY=""
+            fi
             [[ $REPLY =~ ^[Yy]$ ]] && fix_grub_quick
 
-            read -p "是否现在重启系统？[y/N]: " -n 1 -r </dev/tty; echo
+            if [[ -e /dev/tty ]]; then
+                read -p "是否现在重启系统？[y/N]: " -n 1 -r </dev/tty; echo
+            else
+                log_info "无交互终端，请稍后手动重启"
+                REPLY=""
+            fi
             [[ $REPLY =~ ^[Yy]$ ]] && safe_reboot \
                 || log_info "请稍后手动重启: sudo reboot"
         fi
@@ -1014,6 +1141,10 @@ EOF
 
 # ── 快速 GRUB 修复 ────────────────────────────────────────────────────────────
 fix_grub_quick() {
+    if is_container; then
+        log_info "容器环境，跳过 GRUB 修复"
+        return 0
+    fi
     log_info "执行保守 GRUB 修复..."
     $USE_SUDO update-grub 2>/dev/null \
         || $USE_SUDO grub-mkconfig -o /boot/grub/grub.cfg 2>/dev/null || true
@@ -1026,17 +1157,80 @@ fix_grub_quick() {
     log_success "保守 GRUB 修复完成"
 }
 
+# ── 获取 GRUB 目标架构 ────────────────────────────────────────────────────────
+# 根据 uname -m 返回 GRUB 安装目标和包名
+get_grub_target() {
+    local arch
+    arch=$(uname -m)
+    case "$arch" in
+        x86_64|amd64)
+            echo "x86_64-efi|i386-pc|grub-efi-amd64|grub-pc" ;;
+        aarch64|arm64)
+            echo "arm64-efi|arm64-efi|grub-efi-arm64|grub-efi-arm64" ;;
+        armv7l|armhf)
+            echo "arm-efi|arm-efi|grub-efi-arm|grub-efi-arm" ;;
+        *)
+            echo "x86_64-efi|i386-pc|grub-efi-amd64|grub-pc"
+            log_warning "未知架构 $arch，回退为 x86_64" ;;
+    esac
+}
+
+# ── 检测是否为容器环境（OpenVZ / LXC / Docker）────────────────────────────
+is_container() {
+    # systemd-detect-virt --container 是最可靠的方法
+    if command -v systemd-detect-virt >/dev/null 2>&1; then
+        systemd-detect-virt --container >/dev/null 2>&1 && return 0
+    fi
+    # 后备：检查常见容器标志
+    [[ -f /.dockerenv ]] && return 0
+    grep -qE 'docker|lxc|container' /proc/1/environ 2>/dev/null && return 0
+    # OpenVZ/Virtuozzo: /proc/vz 或 /proc/bc 存在
+    [[ -d /proc/vz || -d /proc/bc ]] && return 0
+    return 1
+}
+
+# ── 获取 EFI 目录 ──────────────────────────────────────────────────────────────
+get_efi_dir() {
+    # 方式1: findmnt 查找 ESP 挂载点
+    if command -v findmnt >/dev/null 2>&1; then
+        local esp
+        esp=$(findmnt -n -o TARGET -t vfat 2>/dev/null | head -1)
+        [[ -n "$esp" ]] && echo "$esp" && return
+    fi
+    # 方式2: 检查常见路径
+    for d in /boot/efi /efi /boot/EFI; do
+        [[ -d "$d" ]] && echo "$d" && return
+    done
+    # 方式3: /etc/fstab 查找 vfat 挂载
+    awk '$3=="vfat" && /\/boot|\/efi/{print $2}' /etc/fstab 2>/dev/null | head -1
+}
+
 # ── GRUB 专项修复模式 ─────────────────────────────────────────────────────────
 fix_grub_mode() {
     log_info "═══════════════════════════════════════════"
     log_info "🔧 GRUB 引导修复模式"
     log_info "═══════════════════════════════════════════"
 
-    local boot_mode boot_disk
+    # 容器环境跳过 GRUB 操作
+    if is_container; then
+        log_warning "检测到容器环境，无需 GRUB 引导修复"
+        log_info "容器使用宿主内核引导，跳过所有 GRUB 步骤"
+        return 0
+    fi
+
+    local boot_mode boot_disk grub_target
     boot_mode=$(detect_boot_mode)
     boot_disk=$(detect_boot_disk)
 
-    log_info "启动模式: $boot_mode | 引导磁盘: ${boot_disk:-未检测到}"
+    log_info "启动模式: $boot_mode | 架构: $(uname -m) | 引导磁盘: ${boot_disk:-未检测到}"
+
+    # 解析 GRUB 目标架构
+    local grub_info efi_target bios_target efi_pkg bios_pkg
+    grub_info=$(get_grub_target)
+    efi_target=$(echo "$grub_info" | cut -d'|' -f1)
+    bios_target=$(echo "$grub_info" | cut -d'|' -f2)
+    efi_pkg=$(echo "$grub_info"    | cut -d'|' -f3)
+    bios_pkg=$(echo "$grub_info"   | cut -d'|' -f4)
 
     if [[ -z "$boot_disk" ]]; then
         log_warning "未能自动检测引导磁盘，请手动选择："
@@ -1046,7 +1240,12 @@ fix_grub_mode() {
             echo "  $((${#disks[@]})). /dev/$line"
         done < <(lsblk -d -n -o NAME,TYPE,SIZE | awk '$2=="disk"{print $1" - "$3}')
 
-        read -p "输入编号或回车跳过: " -r </dev/tty
+        if [[ -e /dev/tty ]]; then
+            read -p "输入编号或回车跳过: " -r </dev/tty
+        else
+            log_warning "无交互终端，跳过磁盘选择"
+            REPLY=""
+        fi
         if [[ "$REPLY" =~ ^[0-9]+$ ]] && (( REPLY >= 1 && REPLY <= ${#disks[@]} )); then
             boot_disk="/dev/$(echo "${disks[$((REPLY-1))]}" | awk '{print $1}')"
             log_info "已选择: $boot_disk"
@@ -1057,10 +1256,10 @@ fix_grub_mode() {
     log_info "步骤 1: 重装 GRUB 包"
     if [[ "$boot_mode" == "uefi" ]]; then
         DEBIAN_FRONTEND=noninteractive $USE_SUDO apt-get install --reinstall -y \
-            grub-efi-amd64 grub-efi-amd64-bin grub2-common efibootmgr 2>/dev/null || true
+            "$efi_pkg" "${efi_pkg}-bin" grub2-common efibootmgr 2>/dev/null || true
     else
         DEBIAN_FRONTEND=noninteractive $USE_SUDO apt-get install --reinstall -y \
-            grub-pc grub-pc-bin grub2-common 2>/dev/null || true
+            "$bios_pkg" "${bios_pkg}-bin" grub2-common 2>/dev/null || true
     fi
 
     # 生成 GRUB 配置
@@ -1072,14 +1271,16 @@ fix_grub_mode() {
     if [[ -n "$boot_disk" ]]; then
         log_info "步骤 3: 安装 GRUB 到 $boot_disk"
         if [[ "$boot_mode" == "uefi" ]]; then
-            local efi_dir="/boot/efi"
-            [[ ! -d "$efi_dir" && -d "/efi" ]] && efi_dir="/efi"
-            $USE_SUDO grub-install --target=x86_64-efi \
+            local efi_dir
+            efi_dir=$(get_efi_dir)
+            [[ -z "$efi_dir" ]] && efi_dir="/boot/efi"
+            log_info "EFI 目录: $efi_dir"
+            $USE_SUDO grub-install --target="$efi_target" \
                 --efi-directory="$efi_dir" \
                 --bootloader-id=debian \
                 --recheck --force 2>&1 | tail -3
         else
-            $USE_SUDO grub-install --target=i386-pc \
+            $USE_SUDO grub-install --target="$bios_target" \
                 --recheck --force "$boot_disk" 2>&1 | tail -3
         fi
     fi
@@ -1108,16 +1309,19 @@ fix_only_mode() {
     log_info "🔧 系统修复模式"
     log_info "═══════════════════════════════════════════"
 
-    log_info "1/5 检查异常动态库注入"
+    log_info "1/6 停止 apt 系统定时器"
+    stop_apt_units
+
+    log_info "2/6 检查异常动态库注入"
     check_runtime_injection
 
-    log_info "2/5 检查 initramfs 生成能力"
+    log_info "3/6 检查 initramfs 生成能力"
     check_initramfs_health
 
-    log_info "3/5 等待 APT/dpkg 锁释放"
+    log_info "4/6 等待 APT/dpkg 锁释放"
     wait_for_apt_locks
 
-    log_info "4/5 修复 dpkg 和依赖状态"
+    log_info "5/6 修复 dpkg 和依赖状态"
     if ! $USE_SUDO dpkg --configure -a 2>&1 | tee "$APT_UPGRADE_LOG"; then
         diagnose_upgrade_failure "$APT_UPGRADE_LOG"
         return 1
@@ -1128,7 +1332,7 @@ fix_only_mode() {
         return 1
     fi
 
-    log_info "5/5 刷新 GRUB 配置"
+    log_info "6/6 刷新 GRUB 配置"
     fix_grub_quick
 
     log_success "系统修复完成"
@@ -1163,19 +1367,8 @@ cleanup_mode() {
 
     # 步骤 3: 清理旧内核（保留当前和最新）
     log_info "步骤 3/5: 清理旧内核..."
-    local cur_k latest_k keep_count
-    cur_k=$(uname -r)
-    latest_k=$(ls -t /boot/vmlinuz-* 2>/dev/null | head -1 | sed 's|/boot/vmlinuz-||')
-    local old_kernels=""
-    while read -r pkg; do
-        local ver="${pkg#linux-image-}"
-        ver="${ver#linux-image-}"  # 兼容双重前缀的包名
-        if [[ "$ver" != "$cur_k" && "$ver" != "$latest_k" \
-              && "$pkg" != "linux-image-amd64" \
-              && "$pkg" != "linux-image-arm64" ]]; then
-            old_kernels="$old_kernels $pkg"
-        fi
-    done < <(dpkg -l 'linux-image-*' 2>/dev/null | awk '/^ii/{print $2}')
+    local old_kernels
+    old_kernels=$(get_old_kernels)
 
     if [[ -n "$old_kernels" ]]; then
         local kernel_count
@@ -1231,52 +1424,68 @@ self_update_mode() {
     local tmp_file
     tmp_file="$(mktemp)"
     log_info "当前版本: v${SCRIPT_VERSION}"
-    log_info "下载最新版本..."
 
-    if wget -q --timeout=30 -O "$tmp_file" "$SCRIPT_REPO" 2>/dev/null; then
-        local remote_version
-        remote_version=$(grep '^SCRIPT_VERSION=' "$tmp_file" | head -1 | cut -d'"' -f2)
-        if [[ -z "$remote_version" ]]; then
-            log_error "无法解析远程版本，请手动下载: $SCRIPT_REPO"
-            rm -f "$tmp_file"
-            return 1
-        fi
-
-        log_info "远程版本: v${remote_version}"
-
-        if [[ "$remote_version" == "$SCRIPT_VERSION" ]]; then
-            log_success "已是最新版本 v${SCRIPT_VERSION}"
-            rm -f "$tmp_file"
-            return 0
-        fi
-
-        # 预检远程脚本语法
-        if ! bash -n "$tmp_file" 2>/dev/null; then
-            log_error "远程脚本语法检查失败，拒绝更新"
-            rm -f "$tmp_file"
-            return 1
-        fi
-
-        # 备份当前脚本
-        local backup
-        backup="$(dirname "$(realpath "$0")")/${SCRIPT_NAME}.v${SCRIPT_VERSION}.bak"
-        cp "$(realpath "$0")" "$backup" 2>/dev/null || true
-        log_info "已备份当前版本: $backup"
-
-        # 替换并保持权限
-        cat "$tmp_file" > "$(realpath "$0")"
-        chmod +x "$(realpath "$0")"
-        rm -f "$tmp_file"
-
-        log_success "═══════════════════════════════════════════"
-        log_success "🎉 更新完成: v${SCRIPT_VERSION} → v${remote_version}"
-        log_success "═══════════════════════════════════════════"
-        log_info "重新运行以使用新版本: $0 --help"
-    else
-        log_error "下载失败，请检查网络或手动下载: $SCRIPT_REPO"
+    if ! command -v wget >/dev/null 2>&1; then
+        log_error "未找到 wget，请先安装: sudo apt-get install wget"
+        log_error "也可使用 curl 手动下载: curl -fL --proto '=https' --tlsv1.2 -o debian_upgrade.sh $SCRIPT_REPO"
         rm -f "$tmp_file"
         return 1
     fi
+
+    log_info "下载最新版本..."
+
+    # 尝试主地址（GitHub），失败则使用 CDN 回退（国内网络更稳定）
+    local download_url="$SCRIPT_REPO"
+    if ! wget -q --timeout=15 -O "$tmp_file" "$download_url" 2>/dev/null; then
+        log_warning "主地址下载失败，尝试 CDN 回退地址..."
+        download_url="$SCRIPT_REPO_CDN"
+        if ! wget -q --timeout=30 -O "$tmp_file" "$download_url" 2>/dev/null; then
+            log_error "所有下载地址均失败，请检查网络或手动下载"
+            log_error "  主地址: $SCRIPT_REPO"
+            log_error "  CDN  :  $SCRIPT_REPO_CDN"
+            rm -f "$tmp_file"
+            return 1
+        fi
+    fi
+
+    local remote_version
+    remote_version=$(grep '^SCRIPT_VERSION=' "$tmp_file" | head -1 | cut -d'"' -f2)
+    if [[ -z "$remote_version" ]]; then
+        log_error "无法解析远程版本，请手动下载: $download_url"
+        rm -f "$tmp_file"
+        return 1
+    fi
+
+    log_info "远程版本: v${remote_version}"
+
+    if [[ "$remote_version" == "$SCRIPT_VERSION" ]]; then
+        log_success "已是最新版本 v${SCRIPT_VERSION}"
+        rm -f "$tmp_file"
+        return 0
+    fi
+
+    # 预检远程脚本语法
+    if ! bash -n "$tmp_file" 2>/dev/null; then
+        log_error "远程脚本语法检查失败，拒绝更新"
+        rm -f "$tmp_file"
+        return 1
+    fi
+
+    # 备份当前脚本
+    local backup
+    backup="$(dirname "$(realpath "$0")")/${SCRIPT_NAME}.v${SCRIPT_VERSION}.bak"
+    cp "$(realpath "$0")" "$backup" 2>/dev/null || true
+    log_info "已备份当前版本: $backup"
+
+    # 替换并保持权限
+    cat "$tmp_file" > "$(realpath "$0")"
+    chmod +x "$(realpath "$0")"
+    rm -f "$tmp_file"
+
+    log_success "═══════════════════════════════════════════"
+    log_success "🎉 更新完成: v${SCRIPT_VERSION} → v${remote_version}"
+    log_success "═══════════════════════════════════════════"
+    log_info "重新运行以使用新版本: $0 --help"
 }
 
 preflight_mode() {
