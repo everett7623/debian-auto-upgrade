@@ -6,31 +6,54 @@
 
 ## 未发布
 
-### 文档
+## v3.6 - 2026-06-10
 
-- 基于原版 README 恢复全部章节、示例、支持方式、致谢和完整版本历史。
-- 统一 README 与 CHANGELOG 的版本编号、发布日期和主要变更。
+### VPS 兼容性
 
-## v3.3.1 - 2026-06-09
+- ARM64 (aarch64) 架构支持：`fix_grub_mode` 根据 `uname -m` 自动选择正确的 GRUB 包和目标。
+- 容器环境自动检测：识别 OpenVZ / LXC / Docker，跳过 GRUB 预设、initramfs 检查和引导磁盘警告。
+- 非交互终端安全降级：缺失 `/dev/tty` 时（cron / systemd 环境）优雅回退，不再崩溃。
+- EFI 目录多策略检测：`findmnt` → 常见路径 → `/etc/fstab` 逐层查找 ESP 挂载点。
+- 网络检测 HTTP 回退：ICMP 被阻断（国内常见）时自动尝试 wget/curl 连接镜像源。
+- `--self-update` CDN 回退：GitHub 不可达时自动尝试 jsDelivr CDN 地址。
 
 ### 修复
 
-- 修复最小升级失败后仍继续执行完整升级的问题。
-- 修复完整升级失败后自动重复 `dpkg`、依赖修复和 `dist-upgrade`，导致相同错误反复执行、耗时过长的问题。
-- 错误退出时不再通过 ERR trap 自动再次执行包管理修复。
-- 修复升级后重复为所有旧内核生成 initramfs 的低效行为。
+- 修复 `fix_only_mode` 缺少 `stop_apt_units` 导致 apt-daily 定时任务抢占锁的问题。
+- 修复 GPG 恢复路径在 404 和 GPG 错误同时出现时不可达（重排分支顺序：GPG → 404）。
+- 修复 `detect_boot_disk` 策略 3 中 `blkid -U` 缺少 `$USE_SUDO` 前缀。
+- 修复 `--mirror` 无效值时静默回退到官方源，改为主动警告。
+- 修复 `check_upgrade` 将 oldstable / oldoldstable 误标为 "不稳定版本"。
+
+### 优化
+
+- 版本元数据从硬编码 case 语句重构为关联数组（`DEBIAN_CODENAME` / `DEBIAN_STATUS` / `DEBIAN_NEXT`）。
+- 抽取 `get_old_kernels()` 共享函数，消除 `clean_old_kernels` 和 `cleanup_mode` 中约 20 行重复代码。
+- 升级日志文件拆分：`apt-upgrade.log` / `apt-dist-upgrade.log` / `initramfs-post.log` 独立保存。
+- `self_update_mode` 添加 wget 存在性检查和 curl 替代方案提示。
+- `safe_read()` 辅助函数统一处理交互输入和 tty 降级。
+
+## v3.5 - 2026-06-10
 
 ### 新增
 
+- 新增 `--cleanup` 升级后五步清理模式（废弃包 → rc 残留 → 旧内核 → APT 缓存 → .dpkg-* 文件）。
+- 新增 `--self-update` 脚本自动更新（从 GitHub 下载最新版，语法检查后替换）。
 - 新增 `--preflight` 深度检查模式，不切换软件源即可验证动态库、initramfs 和 dpkg 状态。
-- 升级前使用临时文件预构建当前内核 initramfs，失败时在修改 APT 源之前停止。
+- 升级前预构建当前内核 initramfs，失败时在修改 APT 源之前安全停止。
 - 检查 `fsck` 动态库依赖和 `/etc/ld.so.preload` 中的非常规路径。
-- 针对 `hooks/fsck failed`、`/var/adm/<UUID>`、磁盘空间和网络错误提供分类诊断。
+
+### 修复
+
+- 修复跨版本 GPG 签名验证失败：切换源前更新 `debian-archive-keyring`，遇 NO_PUBKEY 时使用 `[trusted=yes]` 临时绕过。
+- 修复云镜像 / 容器环境下 initramfs 预检因缺少 `/var/tmp` 失败。
+- 修复最小升级失败后仍继续执行完整升级的问题。
+- 修复完整升级失败后自动重复执行耗时包管理操作的问题。
+- 错误退出时不再通过 ERR trap 自动重试包管理修复。
 
 ### 性能
 
-- APT 更新默认不再下载 `deb-src` 源码索引。
-- APT 更新默认跳过翻译索引。
+- APT 更新默认不再下载源码索引和翻译索引。
 - APT 已生成最新内核 initramfs 时跳过重复重建。
 - 每个升级阶段最多执行一次，失败后保留日志并立即停止。
 

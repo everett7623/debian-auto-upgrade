@@ -7,7 +7,7 @@
 [![CI](https://github.com/everett7623/debian-auto-upgrade/actions/workflows/ci.yml/badge.svg)](https://github.com/everett7623/debian-auto-upgrade/actions/workflows/ci.yml)
 [![Debian](https://img.shields.io/badge/Debian-11--13-red.svg)](https://www.debian.org/)
 [![Bash](https://img.shields.io/badge/Language-Bash-green.svg)](https://www.gnu.org/software/bash/)
-[![Version](https://img.shields.io/badge/Version-3.5-brightgreen.svg)](https://github.com/everett7623/debian-auto-upgrade/releases)
+[![Version](https://img.shields.io/badge/Version-3.6-brightgreen.svg)](https://github.com/everett7623/debian-auto-upgrade/releases)
 
 专为 Debian 系统打造的自动化升级脚本，支持从旧版本安全逐级升级到最新稳定版本。针对 VPS 环境深度优化，具备完善的错误恢复与容错能力。
 
@@ -18,10 +18,14 @@
 - 🔄 **逐级安全升级** — 主脚本支持 Debian 11 → 12 → 13 相邻版本升级，避免跨版本风险
 - 🛡️ **智能版本管控** — 默认阻止意外升级到不稳定版本，`--stable-only` 模式保障生产安全
 - 🌍 **国内镜像支持** — 一键切换阿里云 / 清华 / 中科大镜像源，国内 VPS 推荐使用
+- 📡 **CDN 自更新** — `--self-update` GitHub 不可达时自动回退 jsDelivr CDN
 - 🔧 **APT 源安全处理** — 同时识别 `.list` 与 Deb822 `.sources`，升级前备份并暂时禁用附加源
 - 🔒 **APT 锁安全等待** — 等待 APT/dpkg 锁正常释放，不直接删除仍被进程占用的锁文件
 - 💾 **配置完整备份** — 升级前自动备份网络配置、APT 源等关键文件
 - 🖥️ **GRUB 保守处理** — 自动识别 UEFI/BIOS，常规升级仅刷新配置，不自动写入 MBR
+- 🏗️ **多架构兼容** — 支持 x86_64 和 ARM64 (aarch64)，自动选择正确的 GRUB 包和目标
+- 🐳 **容器智能识别** — 自动检测 OpenVZ / LXC / Docker 环境，跳过 GRUB 和 /boot 相关操作
+- 🤖 **无人值守安全** — 缺失 `/dev/tty` 时优雅降级，兼容 cron / systemd 自动化环境
 - 📊 **彩色日志输出** — 带时间戳的分级日志，`--debug` 模式输出完整诊断信息
 - 🔍 **升级前后验证** — 自动校验升级结果，失败时触发错误恢复流程
 - ⚠️ **风险分级确认** — 稳定版单次确认，测试版强制输入 `YES` 二次确认
@@ -433,6 +437,7 @@ systemctl status networking systemd-networkd NetworkManager
 
 | 版本 | 日期 | 主要变更 |
 |------|------|----------|
+| **v3.6** | 2026-06-10 | VPS 兼容性全面加固：ARM64 架构支持、容器自动识别、非交互终端安全降级、CDN 自更新回退、EFI 多路径检测、GPG 恢复路径修复；关联数组重构、日志拆分等 |
 | **v3.5** | 2026-06-10 | 新增 `--cleanup`（升级后五步清理）和 `--self-update`（从 GitHub 自动更新）；修复跨版本 GPG 签名验证和云镜像 initramfs 预检失败 |
 | **v3.4** | 2026-06-10 | 代码审查：修复 dpkg ERR 陷阱、lsblk 显示缺陷、forky 检测缺失、GPG 密钥环错误；注释全面中文化 |
 | **v3.3.1** | 2026-06-09 | 修复失败后重复执行导致耗时过长：新增 initramfs/动态库预检与 `--preflight`；首次升级失败立即停止；精简 APT 索引；跳过重复 initramfs 重建 |
