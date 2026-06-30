@@ -252,20 +252,46 @@ declare -A DEBIAN_NEXT=(
 declare -A UBUNTU_CODENAME=(
     [20.04]="focal" [22.04]="jammy" [24.04]="noble" [26.04]="plucky"
 )
+declare -A UBUNTU_STATUS=(
+    [20.04]="oldlts" [22.04]="oldlts" [24.04]="lts" [26.04]="lts"
+)
 declare -A UBUNTU_NEXT=(
     [20.04]="22.04" [22.04]="24.04" [24.04]="26.04"
 )
 
+get_os_id() {
+    grep "^ID=" /etc/os-release 2>/dev/null | cut -d'=' -f2 | tr -d '"'
+}
+
 get_version_info() {
-    local codename="${DEBIAN_CODENAME[$1]:-unknown}"
-    local status="${DEBIAN_STATUS[$1]:-unknown}"
+    local version="$1"
+    local os_id="${2:-$(get_os_id)}"
+    local codename status
+
+    if [[ "$os_id" == "ubuntu" ]]; then
+        codename="${UBUNTU_CODENAME[$version]:-unknown}"
+        status="${UBUNTU_STATUS[$version]:-unsupported}"
+        echo "${codename}|${status}"
+        return
+    fi
+
+    codename="${DEBIAN_CODENAME[$version]:-unknown}"
+    status="${DEBIAN_STATUS[$version]:-unknown}"
     echo "${codename}|${status}"
 }
 
 get_next_version() {
-    local nxt="${DEBIAN_NEXT[$1]:-}"
+    local version="$1"
+    local os_id="${2:-$(get_os_id)}"
+
+    if [[ "$os_id" == "ubuntu" ]]; then
+        echo "${UBUNTU_NEXT[$version]:-}"
+        return
+    fi
+
+    local nxt="${DEBIAN_NEXT[$version]:-}"
     # Debian 13 → 14 受 STABLE_ONLY 门控（14 为 testing）
-    if [[ "$1" == "13" ]]; then
+    if [[ "$version" == "13" ]]; then
         [[ "${STABLE_ONLY:-1}" == "1" ]] && echo "" || echo "14"
         return
     fi
@@ -275,8 +301,39 @@ get_next_version() {
 # ── 当前版本检测（多策略，容错）──────────────────────────────────────────────
 get_current_version() {
     local version_id=""
+    local os_id
+    os_id=$(get_os_id)
 
-    log_debug "开始检测 Debian 版本..."
+    log_debug "开始检测系统版本..."
+
+    # Ubuntu 版本优先保留 major.minor（如 22.04）
+    if [[ "$os_id" == "ubuntu" ]]; then
+        if [[ -f /etc/os-release ]]; then
+            version_id=$(grep "^VERSION_ID=" /etc/os-release \
+                         | cut -d'"' -f2 | tr -d '[:space:]' 2>/dev/null || true)
+            log_debug "ubuntu os-release VERSION_ID: '$version_id'"
+        fi
+
+        if [[ -z "$version_id" || ! "$version_id" =~ ^[0-9]+\.[0-9]+$ ]] \
+           && command -v lsb_release >/dev/null 2>&1; then
+            local uv
+            uv=$(lsb_release -rs 2>/dev/null | tr -d '[:space:]')
+            [[ "$uv" =~ ^[0-9]+\.[0-9]+$ ]] && version_id="$uv"
+            log_debug "ubuntu lsb_release: '$uv'"
+        fi
+
+        if [[ -z "$version_id" || ! "$version_id" =~ ^[0-9]+\.[0-9]+$ ]]; then
+            log_error "无法确定 Ubuntu 版本，调试信息："
+            log_error "  os-release          : $(grep VERSION /etc/os-release 2>/dev/null || echo '不存在')"
+            log_error "  内核版本            : $(uname -r)"
+            echo ""
+            return 1
+        fi
+
+        log_debug "最终版本: '$version_id'"
+        echo "$version_id"
+        return
+    fi
 
     # 策略1: /etc/os-release VERSION_ID
     if [[ -f /etc/os-release ]]; then
@@ -481,15 +538,24 @@ check_system() {
 
     # 网络连通性（仅警告，不阻断）
     # ICMP 在某些 VPS 环境被阻断（特别是国内），优先用 HTTP 检测
+    local os_id check_host check_url
+    os_id=$(get_os_id)
+    check_host="deb.debian.org"
+    check_url="${MIRROR_BASE}"
+    if [[ "$os_id" == "ubuntu" ]]; then
+        check_host="archive.ubuntu.com"
+        check_url="http://archive.ubuntu.com/ubuntu"
+    fi
+
     local net_ok=0
-    if ping -c 1 -W 5 deb.debian.org >/dev/null 2>&1; then
+    if ping -c 1 -W 5 "$check_host" >/dev/null 2>&1; then
         net_ok=1
-    elif command -v wget >/dev/null 2>&1 && wget -q --timeout=10 --spider "${MIRROR_BASE}" 2>/dev/null; then
+    elif command -v wget >/dev/null 2>&1 && wget -q --timeout=10 --spider "${check_url}" 2>/dev/null; then
         net_ok=1
-    elif command -v curl >/dev/null 2>&1 && curl -s --connect-timeout 10 --head "${MIRROR_BASE}" >/dev/null 2>&1; then
+    elif command -v curl >/dev/null 2>&1 && curl -s --connect-timeout 10 --head "${check_url}" >/dev/null 2>&1; then
         net_ok=1
     fi
-    (( net_ok )) || log_warning "无法连接 deb.debian.org（ICMP + HTTP 均失败），请确认网络或使用 --mirror 选项"
+    (( net_ok )) || log_warning "无法连接 ${check_host}（ICMP + HTTP 均失败），请确认网络或使用 --mirror 选项"
 
     if is_container; then
         log_info "检测到容器环境（OpenVZ / LXC / Docker），跳过 /boot 和 GRUB 相关检查"
@@ -774,14 +840,14 @@ safe_reboot() {
 show_help() {
     cat << EOF
 ╔══════════════════════════════════════════════════════════════════╗
-║         Debian 自动逐级升级脚本 v${SCRIPT_VERSION}  (${SCRIPT_DATE})         ║
+║     Debian / Ubuntu 自动逐级升级脚本 v${SCRIPT_VERSION} (${SCRIPT_DATE})      ║
 ╚══════════════════════════════════════════════════════════════════╝
 
 📖 用法: $0 [选项]
 
 🔧 选项:
   -h, --help            显示此帮助
-  -v, --version         显示当前 Debian 版本
+    -v, --version         显示当前系统版本（Debian/Ubuntu）
   -c, --check           检查是否有可用升级
   --preflight           执行升级前深度检查，不切换软件源
   -d, --debug           启用调试模式
@@ -790,12 +856,13 @@ show_help() {
   --cleanup             清理升级后的系统垃圾（旧内核、废弃包、残留配置）
   --self-update         从 GitHub 下载最新版本替换当前脚本
   --force               跳过所有确认提示
-  --stable-only         仅升级到稳定版（默认，跳过 testing）
-  --allow-testing       允许升级到 Debian 14 Forky（testing）
+    --stable-only         仅升级到稳定版（Debian 默认，跳过 testing）
+    --allow-testing       允许升级到 Debian 14 Forky（testing，仅 Debian）
   --mirror <cn|tuna|ustc>  使用国内镜像源
 
 ✨ 功能特性:
-  ✅ 自动检测并逐级升级 Debian 11 → 12 → 13
+    ✅ 自动检测并逐级升级 Debian 11 → 12 → 13
+    ✅ 支持 Ubuntu LTS 相邻升级：20.04 → 22.04 → 24.04 → 26.04
   ✅ 升级前备份并禁用 backports / 第三方源
   ✅ 兼容 UEFI / BIOS，支持 NVMe、virtio、xen 磁盘
   ✅ 备份并核对网络接口，不自动改名或重启网络
@@ -806,6 +873,7 @@ show_help() {
 🔄 升级路径:
   Debian 11 (Bullseye) → 12 (Bookworm) → 13 (Trixie) [当前稳定版]
                          → 14 (Forky)    [testing，需 --allow-testing]
+    Ubuntu 20.04 (Focal) → 22.04 (Jammy) → 24.04 (Noble) → 26.04 (Plucky)
   Debian 8-10 的历史脚本仅供迁移研究，不属于当前生产支持范围
 
 💻 示例:
@@ -826,6 +894,7 @@ show_help() {
   • 升级前请创建系统快照或数据备份
   • Debian 13 (Trixie) 为当前推荐稳定版，支持至 2030 年
   • Debian 14 (Forky) 处于 testing，不建议生产环境使用
+    • Ubuntu 仅支持 LTS 相邻升级，不执行跨代跳级
 EOF
 }
 
@@ -856,6 +925,13 @@ fetch_hit_stats() {
 
 # ── 检查升级状态 ──────────────────────────────────────────────────────────────
 check_upgrade() {
+    local os_id
+    os_id=$(get_os_id)
+    if [[ "$os_id" == "ubuntu" ]]; then
+        check_upgrade_ubuntu
+        return
+    fi
+
     local cur nxt cur_info nxt_info cur_name cur_stat nxt_name nxt_stat
     cur=$(get_current_version)
     cur_info=$(get_version_info "$cur")
@@ -952,6 +1028,53 @@ check_upgrade() {
     _stats=$(fetch_hit_stats 2>/dev/null) || _stats=""
     if [[ -n "$_stats" ]]; then
         echo "  📊 累计运行: ${_stats} 次"
+    fi
+
+    echo "═══════════════════════════════════════════"
+}
+
+check_upgrade_ubuntu() {
+    local cur nxt cur_info nxt_info cur_name cur_stat nxt_name nxt_stat
+    cur=$(get_current_version)
+    cur_info=$(get_version_info "$cur" "ubuntu")
+    cur_name=$(echo "$cur_info" | cut -d'|' -f1)
+    cur_stat=$(echo "$cur_info" | cut -d'|' -f2)
+    nxt=$(get_next_version "$cur" "ubuntu")
+
+    echo "═══════════════════════════════════════════"
+    echo "  🔍 Ubuntu LTS 升级状态检查"
+    echo "═══════════════════════════════════════════"
+    echo "  当前版本: Ubuntu $cur ($cur_name) [$cur_stat]"
+
+    if [[ -z "$nxt" ]]; then
+        echo "  状    态: ✅ 已是最新支持的 LTS 版本"
+    else
+        nxt_info=$(get_version_info "$nxt" "ubuntu")
+        nxt_name=$(echo "$nxt_info" | cut -d'|' -f1)
+        nxt_stat=$(echo "$nxt_info" | cut -d'|' -f2)
+        echo "  可升级到: Ubuntu $nxt ($nxt_name) [$nxt_stat]"
+    fi
+
+    echo "───────────────────────────────────────────"
+    echo "  启动模式: $(detect_boot_mode)"
+    local _boot_disk
+    _boot_disk=$(detect_boot_disk)
+    echo "  引导磁盘: ${_boot_disk:-未检测到}"
+    echo "  根分区:   $(df -h / | awk 'NR==2{printf "已用 %s，可用 %s", $3, $4}')"
+
+    if mount | grep -q " /boot "; then
+        echo "  /boot:    $(df -h /boot | awk 'NR==2{printf "已用 %s，可用 %s", $3, $4}')"
+    fi
+
+    echo "  内存:     $(free -h | awk 'NR==2{printf "已用 %s / 总计 %s", $3, $2}')"
+
+    if ping -c 1 -W 5 archive.ubuntu.com >/dev/null 2>&1; then
+        echo "  网络:     ✅ 可连接 archive.ubuntu.com"
+    elif { command -v wget >/dev/null 2>&1 && wget -q --timeout=10 --spider "http://archive.ubuntu.com/ubuntu" 2>/dev/null; } \
+      || { command -v curl >/dev/null 2>&1 && curl -s --connect-timeout 10 --head "http://archive.ubuntu.com/ubuntu" >/dev/null 2>&1; }; then
+        echo "  网络:     ⚡ ICMP 不可达但 HTTP 可达（可能被阻断 ICMP）"
+    else
+        echo "  网络:     ⚠️  无法连接 archive.ubuntu.com（ICMP + HTTP 均失败）"
     fi
 
     echo "═══════════════════════════════════════════"
@@ -1234,6 +1357,18 @@ ubuntu_upgrade() {
         [[ ! $REPLY =~ ^[Yy]$ ]] && { log_info "已取消"; exit 0; }
     fi
 
+    # 升级前准备：锁等待、预检、依赖修复、禁用附加源
+    local backup_dir
+    backup_dir=$(save_network_config)
+    stop_apt_units
+    wait_for_apt_locks
+    check_runtime_injection
+    check_initramfs_health
+    $USE_SUDO dpkg --audit 2>/dev/null || true
+    $USE_SUDO dpkg --configure -a 2>/dev/null || true
+    DEBIAN_FRONTEND=noninteractive $USE_SUDO apt-get --fix-broken install -y 2>/dev/null || true
+    clean_apt_sources "$nxt_codename"
+
     # 确定 Ubuntu 镜像源
     local ubuntu_mirror="http://archive.ubuntu.com/ubuntu"
     local ubuntu_security="http://security.ubuntu.com/ubuntu"
@@ -1307,6 +1442,7 @@ EOF
         log_success "║  🎉 升级完成！Ubuntu $version_id → $nxt_version ($nxt_codename)  ║"
         log_success "╚════════════════════════════════════════╝"
         echo
+        log_info "📋 配置备份: $backup_dir"
 
         # 检查是否还有后续版本
         local further="${UBUNTU_NEXT[$nxt_version]:-}"
@@ -1741,9 +1877,15 @@ main() {
         case "$1" in
             -h|--help)    show_help; exit 0 ;;
             -v|--version)
+                local os_id v vi
+                os_id=$(get_os_id)
                 v=$(get_current_version)
-                vi=$(get_version_info "$v")
-                echo "Debian $v ($(echo $vi|cut -d'|' -f1)) [$(echo $vi|cut -d'|' -f2)]"
+                vi=$(get_version_info "$v" "$os_id")
+                if [[ "$os_id" == "ubuntu" ]]; then
+                    echo "Ubuntu $v ($(echo "$vi"|cut -d'|' -f1)) [$(echo "$vi"|cut -d'|' -f2)]"
+                else
+                    echo "Debian $v ($(echo "$vi"|cut -d'|' -f1)) [$(echo "$vi"|cut -d'|' -f2)]"
+                fi
                 exit 0 ;;
             -c|--check)   check_upgrade; exit 0 ;;
             --preflight)  check_root; check_system; preflight_mode; exit 0 ;;

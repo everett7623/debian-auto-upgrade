@@ -17,6 +17,7 @@ grep -q -- '--allow-testing' <<<"$help_output" || fail "help misses --allow-test
 grep -q -- '--preflight' <<<"$help_output" || fail "help misses --preflight"
 grep -q -- '--cleanup' <<<"$help_output" || fail "help misses --cleanup"
 grep -q -- '--self-update' <<<"$help_output" || fail "help misses --self-update"
+grep -q -- 'Ubuntu 20.04 (Focal)' <<<"$help_output" || fail "help misses Ubuntu LTS path"
 
 # Source functions without executing main.
 # shellcheck source=../debian_upgrade.sh
@@ -31,6 +32,17 @@ trap - EXIT
 [[ "$(get_version_info 14)" == "forky|testing" ]] || fail "Forky status"
 [[ -z "$(STABLE_ONLY=1 get_next_version 14)" ]] || fail "Forky stable policy"
 [[ -z "$(get_next_version 14)" ]] || fail "Forky no further upgrade"
+[[ "$(get_version_info 22.04 ubuntu)" == "jammy|oldlts" ]] || fail "Ubuntu 22.04 status"
+[[ "$(get_version_info 24.04 ubuntu)" == "noble|lts" ]] || fail "Ubuntu 24.04 status"
+[[ "$(get_next_version 22.04 ubuntu)" == "24.04" ]] || fail "Ubuntu 22.04 target"
+[[ -z "$(get_next_version 26.04 ubuntu)" ]] || fail "Ubuntu latest no further upgrade"
+
+# Validate default distro-aware routing via get_os_id fallback (without passing explicit distro arg)
+orig_get_os_id="$(declare -f get_os_id)"
+eval "get_os_id() { echo ubuntu; }"
+[[ "$(get_version_info 22.04)" == "jammy|oldlts" ]] || fail "Ubuntu default routing status"
+[[ "$(get_next_version 24.04)" == "26.04" ]] || fail "Ubuntu default routing next"
+eval "$orig_get_os_id"
 
 # Debian path should have exactly 1 dist-upgrade; Ubuntu path adds another (total 2 is valid)
 dist_upgrade_count="$(grep -c 'apt-get dist-upgrade' "$SCRIPT")"
@@ -295,7 +307,6 @@ printf '\n─── Preservation 3.2: Upgrade version detection ───\n'
 # Test version 12 → codename bookworm
 v12_info=$(get_version_info 12)
 v12_codename=$(echo "$v12_info" | cut -d'|' -f1)
-v12_status=$(echo "$v12_info" | cut -d'|' -f2)
 
 if [[ "$v12_codename" == "bookworm" ]]; then
     pres_pass "Preservation 3.2a: Debian 12 codename is 'bookworm'"

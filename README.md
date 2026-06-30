@@ -1,22 +1,23 @@
-# 🚀 Debian Auto Upgrade Tool
+# 🚀 Debian / Ubuntu Auto Upgrade Tool
 
-> 专为 Debian 系统设计的智能逐级升级工具，支持 VPS 环境优化、自动错误修复与保守升级策略
+> 面向 Debian 与 Ubuntu LTS 的智能逐级升级工具，支持 VPS 环境优化、自动错误修复与保守升级策略
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![GitHub release](https://img.shields.io/github/release/everett7623/debian-auto-upgrade.svg)](https://github.com/everett7623/debian-auto-upgrade/releases)
 [![CI](https://github.com/everett7623/debian-auto-upgrade/actions/workflows/ci.yml/badge.svg)](https://github.com/everett7623/debian-auto-upgrade/actions/workflows/ci.yml)
 [![Debian](https://img.shields.io/badge/Debian-11--13-red.svg)](https://www.debian.org/)
+[![Ubuntu](https://img.shields.io/badge/Ubuntu-LTS-orange.svg)](https://ubuntu.com/)
 [![Bash](https://img.shields.io/badge/Language-Bash-green.svg)](https://www.gnu.org/software/bash/)
 [![Version](https://img.shields.io/badge/Version-3.6-brightgreen.svg)](https://github.com/everett7623/debian-auto-upgrade/releases)
 ![Visitors](https://visitor-badge.laobi.icu/badge?page_id=everett7623.debian-auto-upgrade)
 
-专为 Debian 系统打造的自动化升级脚本，支持从旧版本安全逐级升级到最新稳定版本。针对 VPS 环境深度优化，具备完善的错误恢复与容错能力。
+面向 Debian 与 Ubuntu LTS 的自动化升级脚本，支持从旧版本安全逐级升级到最新受支持版本。针对 VPS 环境深度优化，具备完善的错误恢复与容错能力。
 
 > ⚠️ 发行版升级始终存在服务中断、软件源不兼容和无法启动的风险。生产环境请先创建整机快照，并准备云厂商控制台、VNC 或串口控制台。
 
 ## ✨ 功能特性
 
-- 🔄 **逐级安全升级** — 主脚本支持 Debian 11 → 12 → 13 相邻版本升级，避免跨版本风险
+- 🔄 **逐级安全升级** — 主脚本支持 Debian 11 → 12 → 13 与 Ubuntu LTS 相邻升级，避免跨版本风险
 - 🛡️ **智能版本管控** — 默认阻止意外升级到不稳定版本，`--stable-only` 模式保障生产安全
 - 🌍 **国内镜像支持** — 一键切换阿里云 / 清华 / 中科大镜像源，国内 VPS 推荐使用
 - 📡 **CDN 自更新** — `--self-update` GitHub 不可达时自动回退 jsDelivr CDN
@@ -41,6 +42,9 @@
 | Debian 11 (Bullseye) | Debian 12 (Bookworm) | ✅ 支持 | 🔒 稳定 | 主脚本支持 |
 | Debian 12 (Bookworm) | Debian 13 (Trixie) | ✅ 支持 | 🔒 稳定 | **当前推荐**，直接升级无需额外参数 |
 | Debian 13 (Trixie) | Debian 14 (Forky) | ⚠️ 实验性 | 🧪 谨慎 | 需 `--allow-testing`，不建议生产环境 |
+| Ubuntu 20.04 (Focal) | Ubuntu 22.04 (Jammy) | ✅ 支持 | 🔒 稳定 | 仅支持 LTS 相邻升级 |
+| Ubuntu 22.04 (Jammy) | Ubuntu 24.04 (Noble) | ✅ 支持 | 🔒 稳定 | 仅支持 LTS 相邻升级 |
+| Ubuntu 24.04 (Noble) | Ubuntu 26.04 (Plucky) | ✅ 支持 | 🔒 稳定 | 仅支持 LTS 相邻升级 |
 
 > **建议：** 生产系统请升级到 Debian 13 (Trixie)，这是当前稳定版。Debian 8-10 已进入归档范围，镜像、签名和中间升级要求复杂，请先阅读 [历史脚本说明](scripts/README.md) 及 Debian 官方 Release Notes。
 
@@ -94,7 +98,7 @@ sudo ./debian_upgrade.sh --help
 | 参数 | 说明 |
 |------|------|
 | `-h, --help` | 显示帮助信息 |
-| `-v, --version` | 显示当前 Debian 版本 |
+| `-v, --version` | 显示当前系统版本（Debian/Ubuntu） |
 | `-c, --check` | 检查可用升级及系统状态 |
 | `--preflight` | 深度检查 initramfs、动态库依赖和 dpkg 状态，不执行升级 |
 | `-d, --debug` | 启用调试模式，输出详细诊断信息 |
@@ -104,7 +108,7 @@ sudo ./debian_upgrade.sh --help
 | `--self-update` | 从 GitHub 下载最新版本替换当前脚本 |
 | `--force` | 跳过所有确认提示（慎用） |
 | `--stable-only` | 仅升级到稳定版（默认，推荐） |
-| `--allow-testing` | 允许升级到 Debian 14 Forky（testing） |
+| `--allow-testing` | 允许升级到 Debian 14 Forky（testing，仅 Debian） |
 | `--mirror <cn\|tuna\|ustc>` | 使用指定国内镜像源 |
 
 ## 💡 使用示例
