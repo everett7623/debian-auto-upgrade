@@ -8,6 +8,7 @@
 [![Debian](https://img.shields.io/badge/Debian-11--13-red.svg)](https://www.debian.org/)
 [![Bash](https://img.shields.io/badge/Language-Bash-green.svg)](https://www.gnu.org/software/bash/)
 [![Version](https://img.shields.io/badge/Version-3.6-brightgreen.svg)](https://github.com/everett7623/debian-auto-upgrade/releases)
+![Visitors](https://visitor-badge.laobi.icu/badge?page_id=everett7623.debian-auto-upgrade)
 
 专为 Debian 系统打造的自动化升级脚本，支持从旧版本安全逐级升级到最新稳定版本。针对 VPS 环境深度优化，具备完善的错误恢复与容错能力。
 

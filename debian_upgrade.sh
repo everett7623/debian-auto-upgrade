@@ -248,6 +248,14 @@ declare -A DEBIAN_NEXT=(
     [8]="9"  [9]="10"  [10]="11"  [11]="12"  [12]="13"
 )
 
+# ── Ubuntu LTS 版本映射 ──────────────────────────────────────────────────────
+declare -A UBUNTU_CODENAME=(
+    [20.04]="focal" [22.04]="jammy" [24.04]="noble" [26.04]="plucky"
+)
+declare -A UBUNTU_NEXT=(
+    [20.04]="22.04" [22.04]="24.04" [24.04]="26.04"
+)
+
 get_version_info() {
     local codename="${DEBIAN_CODENAME[$1]:-unknown}"
     local status="${DEBIAN_STATUS[$1]:-unknown}"
@@ -443,8 +451,10 @@ clean_apt_sources() {
 check_system() {
     log_info "检查系统环境..."
 
-    if ! grep -q "^ID=debian" /etc/os-release 2>/dev/null; then
-        log_error "此脚本仅适用于 Debian 系统"
+    local os_id
+    os_id=$(grep "^ID=" /etc/os-release 2>/dev/null | cut -d'=' -f2 | tr -d '"')
+    if [[ "$os_id" != "debian" && "$os_id" != "ubuntu" ]]; then
+        log_error "此脚本仅适用于 Debian / Ubuntu 系统"
         exit 1
     fi
 
@@ -819,6 +829,31 @@ show_help() {
 EOF
 }
 
+# ── 运行统计获取（visitor-badge.laobi.icu）───────────────────────────────────
+fetch_hit_stats() {
+    local url="https://visitor-badge.laobi.icu/badge?page_id=everett7623.debian-auto-upgrade"
+    local response total
+
+    # 尝试 curl（优先）或 wget 获取 SVG badge 响应
+    if command -v curl >/dev/null 2>&1; then
+        response=$(curl -s --connect-timeout 3 --max-time 3 "$url" 2>/dev/null) || return 1
+    elif command -v wget >/dev/null 2>&1; then
+        response=$(wget -q --timeout=3 -O - "$url" 2>/dev/null) || return 1
+    else
+        return 1
+    fi
+
+    # 从 SVG badge 解析计数（visitor-badge 返回单个数字：总访问量）
+    # SVG 中的 <text> 元素包含数字
+    total=$(echo "$response" | grep -oP '<text[^>]*>\K\d+(?=</text>)' | tail -1)
+    # 兼容性：某些版本的 grep 无 -P 选项，回退到 sed
+    if [[ -z "$total" ]]; then
+        total=$(echo "$response" | sed -n 's/.*<text[^>]*>\([0-9]\+\)<\/text>.*/\1/p' | tail -1)
+    fi
+
+    [[ -n "$total" ]] && echo "$total" || return 1
+}
+
 # ── 检查升级状态 ──────────────────────────────────────────────────────────────
 check_upgrade() {
     local cur nxt cur_info nxt_info cur_name cur_stat nxt_name nxt_stat
@@ -852,7 +887,9 @@ check_upgrade() {
 
     echo "───────────────────────────────────────────"
     echo "  启动模式: $(detect_boot_mode)"
-    echo "  引导磁盘: $(detect_boot_disk || echo '未检测到')"
+    local _boot_disk
+    _boot_disk=$(detect_boot_disk)
+    echo "  引导磁盘: ${_boot_disk:-未检测到}"
     echo "  根分区:   $(df -h / | awk 'NR==2{printf "已用 %s，可用 %s", $3, $4}')"
 
     if mount | grep -q " /boot "; then
@@ -910,6 +947,13 @@ check_upgrade() {
         echo "  🛡️  保持稳定版推荐:   $0 --stable-only (默认)"
     fi
 
+    # 运行统计
+    local _stats
+    _stats=$(fetch_hit_stats 2>/dev/null) || _stats=""
+    if [[ -n "$_stats" ]]; then
+        echo "  📊 累计运行: ${_stats} 次"
+    fi
+
     echo "═══════════════════════════════════════════"
 }
 
@@ -935,6 +979,13 @@ main_upgrade() {
     log_info "════════════════════════════════════════"
     log_info "Debian 自动升级脚本 v${SCRIPT_VERSION}"
     log_info "当前: Debian $cur ($cur_name) [$cur_stat]"
+
+    # 运行统计
+    local _stats
+    _stats=$(fetch_hit_stats 2>/dev/null) || _stats=""
+    if [[ -n "$_stats" ]]; then
+        log_info "📊 累计运行: ${_stats} 次"
+    fi
 
     if [[ -z "$nxt" ]]; then
         log_success "🎉 已是最新稳定版本 Debian $cur"
@@ -1108,9 +1159,9 @@ EOF
         local further
         further=$(get_next_version "$nxt")
         if [[ -n "$further" ]]; then
-            local fi
-            fi=$(get_version_info "$further")
-            log_info "🚀 后续可继续升级到 Debian $further ($(echo $fi | cut -d'|' -f1))"
+            local further_info
+            further_info=$(get_version_info "$further")
+            log_info "🚀 后续可继续升级到 Debian $further ($(echo $further_info | cut -d'|' -f1))"
         fi
 
         echo
@@ -1135,6 +1186,148 @@ EOF
     else
         log_error "升级验证失败！期望: $nxt，检测到: $new_ver"
         log_error "请运行 $0 --fix-only 尝试修复"
+        exit 1
+    fi
+}
+
+# ── Ubuntu LTS 升级流程 ────────────────────────────────────────────────────────
+ubuntu_upgrade() {
+    local version_id
+    version_id=$(grep "^VERSION_ID=" /etc/os-release 2>/dev/null | cut -d'"' -f2 | tr -d '[:space:]')
+
+    # 验证是否为已知的 LTS 版本
+    if [[ -z "${UBUNTU_CODENAME[$version_id]:-}" ]]; then
+        log_error "不支持的 Ubuntu 版本: $version_id（仅支持 LTS: 20.04, 22.04, 24.04, 26.04）"
+        exit 1
+    fi
+
+    local cur_codename="${UBUNTU_CODENAME[$version_id]}"
+    local nxt_version="${UBUNTU_NEXT[$version_id]:-}"
+
+    log_info "════════════════════════════════════════"
+    log_info "Ubuntu LTS 升级脚本 v${SCRIPT_VERSION}"
+    log_info "当前: Ubuntu $version_id ($cur_codename)"
+
+    # 运行统计
+    local _stats
+    _stats=$(fetch_hit_stats 2>/dev/null) || _stats=""
+    if [[ -n "$_stats" ]]; then
+        log_info "📊 累计运行: ${_stats} 次"
+    fi
+
+    if [[ -z "$nxt_version" ]]; then
+        log_success "🎉 已是最新支持的 LTS 版本 Ubuntu $version_id ($cur_codename)"
+        exit 0
+    fi
+
+    local nxt_codename="${UBUNTU_CODENAME[$nxt_version]}"
+    log_info "目标: Ubuntu $nxt_version ($nxt_codename)"
+
+    # 用户确认
+    if [[ "${FORCE:-0}" != "1" ]]; then
+        if [[ -e /dev/tty ]]; then
+            read -p "确认升级到 Ubuntu $nxt_version ($nxt_codename)？[y/N]: " -n 1 -r </dev/tty; echo
+        else
+            log_warning "无交互终端，默认取消（使用 --force 跳过确认）"
+            REPLY=""
+        fi
+        [[ ! $REPLY =~ ^[Yy]$ ]] && { log_info "已取消"; exit 0; }
+    fi
+
+    # 确定 Ubuntu 镜像源
+    local ubuntu_mirror="http://archive.ubuntu.com/ubuntu"
+    local ubuntu_security="http://security.ubuntu.com/ubuntu"
+    case "${MIRROR:-default}" in
+        cn|china)
+            ubuntu_mirror="http://mirrors.aliyun.com/ubuntu"
+            ubuntu_security="http://mirrors.aliyun.com/ubuntu"
+            ;;
+        tuna)
+            ubuntu_mirror="http://mirrors.tuna.tsinghua.edu.cn/ubuntu"
+            ubuntu_security="http://mirrors.tuna.tsinghua.edu.cn/ubuntu"
+            ;;
+        ustc)
+            ubuntu_mirror="http://mirrors.ustc.edu.cn/ubuntu"
+            ubuntu_security="http://mirrors.ustc.edu.cn/ubuntu"
+            ;;
+    esac
+
+    # ── 步骤 1: 备份并替换 sources.list ──────────────────────────────────────
+    log_info "步骤 1/4: 更新软件源配置 → $nxt_codename"
+    $USE_SUDO cp /etc/apt/sources.list \
+        "/etc/apt/sources.list.backup.$(date +%s)" 2>/dev/null || true
+
+    $USE_SUDO tee /etc/apt/sources.list > /dev/null << EOF
+# Ubuntu $nxt_version ($nxt_codename) - 由 $SCRIPT_NAME v$SCRIPT_VERSION 自动生成
+deb ${ubuntu_mirror} ${nxt_codename} main restricted universe multiverse
+deb ${ubuntu_mirror} ${nxt_codename}-updates main restricted universe multiverse
+deb ${ubuntu_security} ${nxt_codename}-security main restricted universe multiverse
+EOF
+
+    log_success "软件源配置完成"
+
+    # ── 步骤 2: 更新包列表 ────────────────────────────────────────────────────
+    log_info "步骤 2/4: 更新软件包列表"
+    mkdir -p "$RUN_DIR"
+    if ! $USE_SUDO apt-get -o Acquire::Languages=none update 2>&1 | tee "$APT_UPDATE_LOG"; then
+        log_error "软件包列表更新失败，请检查网络或镜像源配置"
+        exit 1
+    fi
+
+    # ── 步骤 3: 执行升级 ──────────────────────────────────────────────────────
+    log_info "步骤 3/4: 执行系统升级"
+
+    log_info "  3.1 最小升级 (upgrade)..."
+    if ! DEBIAN_FRONTEND=noninteractive $USE_SUDO apt-get upgrade -y \
+        -o Dpkg::Options::="--force-confdef" \
+        -o Dpkg::Options::="--force-confold" 2>&1 | tee "$APT_UPGRADE_LOG"; then
+        log_error "最小升级失败"
+        diagnose_upgrade_failure "$APT_UPGRADE_LOG"
+        exit 1
+    fi
+
+    log_info "  3.2 完整升级 (dist-upgrade)..."
+    if ! DEBIAN_FRONTEND=noninteractive $USE_SUDO apt-get dist-upgrade -y \
+        -o Dpkg::Options::="--force-confdef" \
+        -o Dpkg::Options::="--force-confold" 2>&1 | tee "$APT_DIST_UPGRADE_LOG"; then
+        log_error "完整升级失败"
+        diagnose_upgrade_failure "$APT_DIST_UPGRADE_LOG"
+        exit 1
+    fi
+
+    # ── 步骤 4: 验证升级结果 ──────────────────────────────────────────────────
+    log_info "步骤 4/4: 验证升级结果"
+    sleep 2
+    local new_ver
+    new_ver=$(grep "^VERSION_ID=" /etc/os-release 2>/dev/null | cut -d'"' -f2 | tr -d '[:space:]')
+
+    if [[ "$new_ver" == "$nxt_version" ]]; then
+        echo
+        log_success "╔════════════════════════════════════════╗"
+        log_success "║  🎉 升级完成！Ubuntu $version_id → $nxt_version ($nxt_codename)  ║"
+        log_success "╚════════════════════════════════════════╝"
+        echo
+
+        # 检查是否还有后续版本
+        local further="${UBUNTU_NEXT[$nxt_version]:-}"
+        if [[ -n "$further" ]]; then
+            log_info "🚀 后续可继续升级到 Ubuntu $further (${UBUNTU_CODENAME[$further]})"
+        fi
+
+        echo
+        if [[ "${FORCE:-0}" != "1" ]]; then
+            if [[ -e /dev/tty ]]; then
+                read -p "是否现在重启系统？[y/N]: " -n 1 -r </dev/tty; echo
+            else
+                log_info "无交互终端，请稍后手动重启"
+                REPLY=""
+            fi
+            [[ $REPLY =~ ^[Yy]$ ]] && safe_reboot \
+                || log_info "请稍后手动重启: sudo reboot"
+        fi
+    else
+        log_error "升级验证失败！期望: $nxt_version，检测到: $new_ver"
+        log_error "请检查系统状态并手动确认"
         exit 1
     fi
 }
@@ -1194,7 +1387,10 @@ get_efi_dir() {
     # 方式1: findmnt 查找 ESP 挂载点
     if command -v findmnt >/dev/null 2>&1; then
         local esp
-        esp=$(findmnt -n -o TARGET -t vfat 2>/dev/null | head -1)
+        # 优先选择路径包含 efi/EFI 的 vfat 挂载点
+        esp=$(findmnt -n -o TARGET -t vfat 2>/dev/null | grep -i "efi" | head -1)
+        # 回退：取第一个 vfat 挂载（兼容只有单一 ESP 的系统）
+        [[ -z "$esp" ]] && esp=$(findmnt -n -o TARGET -t vfat 2>/dev/null | head -1)
         [[ -n "$esp" ]] && echo "$esp" && return
     fi
     # 方式2: 检查常见路径
@@ -1347,7 +1543,7 @@ cleanup_mode() {
 
     # 清理前磁盘用量
     local before
-    before=$(df -h / | awk 'NR==2{printf "已用 %s / 总计 %s (%.0f%%)", $3, $2, ($3/$2)*100}' 2>/dev/null)
+    before=$(df -h / | awk 'NR==2{printf "已用 %s / 总计 %s (%s)", $3, $2, $5}' 2>/dev/null)
     log_info "清理前根分区: $before"
 
     # 步骤 1: 清理废弃包和孤立依赖
@@ -1407,7 +1603,7 @@ cleanup_mode() {
 
     # 清理后磁盘用量
     local after
-    after=$(df -h / | awk 'NR==2{printf "已用 %s / 总计 %s (%.0f%%)", $3, $2, ($3/$2)*100}' 2>/dev/null)
+    after=$(df -h / | awk 'NR==2{printf "已用 %s / 总计 %s (%s)", $3, $2, $5}' 2>/dev/null)
     log_info "清理后根分区: $after"
 
     log_success "═══════════════════════════════════════════"
@@ -1417,6 +1613,14 @@ cleanup_mode() {
 
 # ── 脚本自更新 ──────────────────────────────────────────────────────────────────
 self_update_mode() {
+    local script_path
+    script_path="$(realpath "$0")"
+    if [[ ! -w "$script_path" ]]; then
+        log_error "无写入权限: $script_path"
+        log_error "请使用 root 或 sudo 运行: sudo $0 --self-update"
+        return 1
+    fi
+
     log_info "═══════════════════════════════════════════"
     log_info "🔄 检查并更新脚本"
     log_info "═══════════════════════════════════════════"
@@ -1505,6 +1709,7 @@ preflight_mode() {
 
 # ── 错误恢复 ──────────────────────────────────────────────────────────────────
 error_recovery() {
+    trap - ERR
     local code="$1"
     KEEP_RUN_DIR=1
     log_error "脚本异常退出（退出码: $code）"
@@ -1565,7 +1770,15 @@ main() {
     set_mirror
     check_root
     check_system
-    main_upgrade
+
+    # OS 类型分流：Ubuntu 走 ubuntu_upgrade，Debian 走 main_upgrade
+    local os_id
+    os_id=$(grep "^ID=" /etc/os-release 2>/dev/null | cut -d'=' -f2 | tr -d '"')
+    if [[ "$os_id" == "ubuntu" ]]; then
+        ubuntu_upgrade
+    else
+        main_upgrade
+    fi
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
