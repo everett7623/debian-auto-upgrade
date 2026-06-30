@@ -16,7 +16,7 @@ Smoke tests are non-privileged: they source the main script and unit-test versio
 
 ## Architecture
 
-The entire tool is a single Bash script: `debian_upgrade.sh` (v3.5, ~1365 lines). It is the **only supported production entry point**. Legacy scripts in `scripts/` are historical reference only.
+The entire tool is a single Bash script: `distro_upgrade.sh` (v3.5, ~1365 lines). It is the **only supported production entry point**. Legacy scripts in `scripts/` are historical reference only.
 
 ### Execution flow
 
@@ -73,7 +73,7 @@ Each invocation creates `/tmp/debian-auto-upgrade-<YYYYMMDD_HHMMSS>_<PID>/`. Unl
 
 | File | Purpose |
 |------|---------|
-| `debian_upgrade.sh` | Single source of truth; all production logic |
+| `distro_upgrade.sh` | Single source of truth; all production logic |
 | `tests/smoke.sh` | Non-privileged unit tests; sources main script to test functions |
 | `Makefile` | CI entry point; wraps bash -n, shellcheck, smoke tests |
 | `.github/workflows/ci.yml` | Runs `make check` on ubuntu-latest |

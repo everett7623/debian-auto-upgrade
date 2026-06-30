@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SCRIPT="${ROOT_DIR}/debian_upgrade.sh"
+SCRIPT="${ROOT_DIR}/distro_upgrade.sh"
 
 fail() {
     printf 'FAIL: %s\n' "$1" >&2
@@ -20,7 +20,7 @@ grep -q -- '--self-update' <<<"$help_output" || fail "help misses --self-update"
 grep -q -- 'Ubuntu 20.04 (Focal)' <<<"$help_output" || fail "help misses Ubuntu LTS path"
 
 # Source functions without executing main.
-# shellcheck source=../debian_upgrade.sh
+# shellcheck source=../distro_upgrade.sh
 source "$SCRIPT"
 trap - EXIT
 

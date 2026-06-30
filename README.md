@@ -53,20 +53,20 @@
 ### 一键安装运行
 
 ```bash
-wget -O debian_upgrade.sh https://raw.githubusercontent.com/everett7623/debian-auto-upgrade/main/debian_upgrade.sh \
-  && chmod +x debian_upgrade.sh \
-  && sudo ./debian_upgrade.sh --preflight \
-  && sudo ./debian_upgrade.sh
+wget -O distro_upgrade.sh https://raw.githubusercontent.com/everett7623/debian-auto-upgrade/main/distro_upgrade.sh \
+  && chmod +x distro_upgrade.sh \
+  && sudo ./distro_upgrade.sh --preflight \
+  && sudo ./distro_upgrade.sh
 ```
 
 也可以使用带 HTTPS 限制的 `curl` 下载：
 
 ```bash
 curl -fL --proto '=https' --tlsv1.2 \
-  -o debian_upgrade.sh \
-  https://raw.githubusercontent.com/everett7623/debian-auto-upgrade/main/debian_upgrade.sh
-chmod +x debian_upgrade.sh
-sudo ./debian_upgrade.sh --check
+  -o distro_upgrade.sh \
+  https://raw.githubusercontent.com/everett7623/debian-auto-upgrade/main/distro_upgrade.sh
+chmod +x distro_upgrade.sh
+sudo ./distro_upgrade.sh --check
 ```
 
 > 下载后建议先核对 GitHub 中的文件内容或发布校验值，不要直接执行来源不明的脚本。
@@ -75,23 +75,25 @@ sudo ./debian_upgrade.sh --check
 
 ```bash
 # 检查当前版本与可用升级
-sudo ./debian_upgrade.sh --check
+sudo ./distro_upgrade.sh --check
 
 # 深度检查 initramfs、动态库和 dpkg 状态，不切换软件源
-sudo ./debian_upgrade.sh --preflight
+sudo ./distro_upgrade.sh --preflight
 
 # 升级到最新稳定版（推荐）
-sudo ./debian_upgrade.sh
+sudo ./distro_upgrade.sh
 
 # 使用国内镜像源升级（国内 VPS 推荐）
-sudo ./debian_upgrade.sh --mirror cn
+sudo ./distro_upgrade.sh --mirror cn
 
 # 查看当前版本
-sudo ./debian_upgrade.sh --version
+sudo ./distro_upgrade.sh --version
 
 # 查看帮助
-sudo ./debian_upgrade.sh --help
+sudo ./distro_upgrade.sh --help
 ```
+
+兼容性说明：仓库保留 `debian_upgrade.sh` 兼容入口，会自动转发到 `distro_upgrade.sh`。
 
 ## 📖 命令参数
 
@@ -117,49 +119,49 @@ sudo ./debian_upgrade.sh --help
 
 ```bash
 # 检查状态，不执行升级
-sudo ./debian_upgrade.sh --check
+sudo ./distro_upgrade.sh --check
 
 # 深度预检通过后再升级
-sudo ./debian_upgrade.sh --preflight
+sudo ./distro_upgrade.sh --preflight
 
 # 升级到 Debian 13 Trixie（当前稳定版）
-sudo ./debian_upgrade.sh --stable-only
+sudo ./distro_upgrade.sh --stable-only
 
 # 国内服务器使用阿里云源
-sudo ./debian_upgrade.sh --mirror cn
+sudo ./distro_upgrade.sh --mirror cn
 ```
 
 ### 开发 / 测试环境
 
 ```bash
 # 允许升级到 Forky 测试版（需手动输入 YES 确认）
-sudo ./debian_upgrade.sh --allow-testing
+sudo ./distro_upgrade.sh --allow-testing
 
 # 自动化场景强制升级（极度谨慎）
-sudo ./debian_upgrade.sh --force --stable-only
+sudo ./distro_upgrade.sh --force --stable-only
 
 # 调试模式排查问题
-sudo ./debian_upgrade.sh --debug --check
+sudo ./distro_upgrade.sh --debug --check
 ```
 
 ### 系统修复
 
 ```bash
 # 等待 APT 锁释放，修复 dpkg、依赖和 GRUB 配置
-sudo ./debian_upgrade.sh --fix-only
+sudo ./distro_upgrade.sh --fix-only
 
 # 专门修复 GRUB 引导（确认目标磁盘后使用）
-sudo ./debian_upgrade.sh --fix-grub
+sudo ./distro_upgrade.sh --fix-grub
 ```
 
 ### 升级后清理与维护
 
 ```bash
 # 清理升级后残留（旧内核、废弃包、rc 配置、APT 缓存、.dpkg-*）
-sudo ./debian_upgrade.sh --cleanup
+sudo ./distro_upgrade.sh --cleanup
 
 # 自动更新脚本到最新版本
-sudo ./debian_upgrade.sh --self-update
+sudo ./distro_upgrade.sh --self-update
 ```
 
 `--cleanup` 执行五步清理，前后显示磁盘用量对比：
@@ -319,7 +321,7 @@ systemctl status apt-daily.service apt-daily-upgrade.service
 确认其他包管理任务结束后，可运行：
 
 ```bash
-sudo ./debian_upgrade.sh --fix-only
+sudo ./distro_upgrade.sh --fix-only
 ```
 
 ### ❓ 重启后系统无法引导
@@ -328,7 +330,7 @@ sudo ./debian_upgrade.sh --fix-only
 
 ```bash
 # 系统仍可启动时：
-sudo ./debian_upgrade.sh --fix-grub
+sudo ./distro_upgrade.sh --fix-grub
 
 # 救援环境中按实际磁盘和挂载情况处理：
 grub-install /dev/sdX
@@ -342,7 +344,7 @@ update-grub
 ```bash
 sudo dpkg --configure -a
 sudo apt-get --fix-broken install
-sudo ./debian_upgrade.sh --fix-only
+sudo ./distro_upgrade.sh --fix-only
 ```
 
 ### ❓ initramfs 报 `hooks/fsck failed` 或出现 `/var/adm/<UUID>`
@@ -352,7 +354,7 @@ sudo ./debian_upgrade.sh --fix-only
 ```bash
 sudo cat /etc/ld.so.preload
 sudo env --unset=LD_PRELOAD ldd /sbin/fsck
-sudo ./debian_upgrade.sh --preflight
+sudo ./distro_upgrade.sh --preflight
 ```
 
 在确认异常库来源前，不要创建缺失目录绕过错误，也不要重启到缺少 initrd 的新内核。建议先创建快照并通过服务商控制台或安全工具完成系统排查。
